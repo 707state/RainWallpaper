@@ -196,10 +196,35 @@ class GLWallpaperEngine(
             return d - r * tip;
         }
 
+        // 3×3 box blur for frosted-glass background
+        vec4 foggedGlass(vec2 uv) {
+            float rx = 0.007 / uAspectRatio;
+            float ry = 0.007;
+            vec4 s00 = texture2D(uTexture, clamp(uv + vec2(-rx, -ry), 0.0, 1.0));
+            vec4 s01 = texture2D(uTexture, clamp(uv + vec2(0.0, -ry), 0.0, 1.0));
+            vec4 s02 = texture2D(uTexture, clamp(uv + vec2( rx, -ry), 0.0, 1.0));
+            vec4 s10 = texture2D(uTexture, clamp(uv + vec2(-rx, 0.0), 0.0, 1.0));
+            vec4 s11 = texture2D(uTexture, uv);
+            vec4 s12 = texture2D(uTexture, clamp(uv + vec2( rx, 0.0), 0.0, 1.0));
+            vec4 s20 = texture2D(uTexture, clamp(uv + vec2(-rx,  ry), 0.0, 1.0));
+            vec4 s21 = texture2D(uTexture, clamp(uv + vec2(0.0,  ry), 0.0, 1.0));
+            vec4 s22 = texture2D(uTexture, clamp(uv + vec2( rx,  ry), 0.0, 1.0));
+
+            vec4 col = s11 * 0.24 +
+                       (s01 + s10 + s12 + s21) * 0.10 +
+                       (s00 + s02 + s20 + s22) * 0.06;
+            // Mist overlay: slight white hazing
+            col.rgb = mix(col.rgb, vec3(0.88), 0.10);
+            return col;
+        }
+
         void main() {
             vec2 uv = vTexCoord;
             vec2 imageUV = uv * uCropScale + uCropOffset;
+            vec4 fogColor = foggedGlass(imageUV);
+
             vec2 totalOffset = vec2(0.0);
+            bool insideAny = false;
 
             for (int i = 0; i < 8; i++) {
                 if (i >= uDropCount) break;
@@ -208,55 +233,58 @@ class GLWallpaperEngine(
                 float deform = uDrops[i].w;
                 if (r < 0.001) continue;
 
-                // Aspect-corrected delta
                 vec2 delta = uv - dp;
                 delta.x *= uAspectRatio;
-
                 float sd = sdTeardrop(delta, uDropVel[i].xy, r, deform);
                 if (sd >= 0.0) continue;
 
-                // Normalised distance inside (0=centre, 1=edge)
+                insideAny = true;
                 float nd = clamp(1.0 + sd / r, 0.0, 1.0);
-
-                // Lens magnification
                 float lens = (1.0 - nd * nd) * 0.28;
                 vec2 dir = length(delta) < 0.001 ? vec2(0.0) : normalize(delta);
                 totalOffset += dir * lens * (r + deform * r * 0.15);
             }
 
-            vec2 finalUV = imageUV + totalOffset;
-            finalUV = clamp(finalUV, 0.0, 1.0);
-            vec4 color = texture2D(uTexture, finalUV);
+            vec4 color;
+            if (insideAny) {
+                // Clear view through water drop with lens magnification
+                vec2 clearUV = imageUV + totalOffset;
+                clearUV = clamp(clearUV, 0.0, 1.0);
+                color = texture2D(uTexture, clearUV);
 
-            // Overlay highlights per droplet
-            for (int i = 0; i < 8; i++) {
-                if (i >= uDropCount) break;
-                vec2 dp = uDrops[i].xy;
-                float r = uDrops[i].z;
-                float deform = uDrops[i].w;
-                if (r < 0.001) continue;
+                // Overlay highlights per droplet
+                for (int i = 0; i < 8; i++) {
+                    if (i >= uDropCount) break;
+                    vec2 dp = uDrops[i].xy;
+                    float r = uDrops[i].z;
+                    float deform = uDrops[i].w;
+                    if (r < 0.001) continue;
 
-                vec2 delta = uv - dp;
-                delta.x *= uAspectRatio;
-                float sd = sdTeardrop(delta, uDropVel[i].xy, r, deform);
-                if (sd >= 0.0) continue;
+                    vec2 delta = uv - dp;
+                    delta.x *= uAspectRatio;
+                    float sd = sdTeardrop(delta, uDropVel[i].xy, r, deform);
+                    if (sd >= 0.0) continue;
 
-                float nd = clamp(1.0 + sd / r, 0.0, 1.0);
+                    float nd = clamp(1.0 + sd / r, 0.0, 1.0);
 
-                // Specular highlight
-                vec2 specOff = vec2(-0.35 / uAspectRatio, -0.35) * r;
-                vec2 specDelta = delta - specOff;
-                float ssd = length(specDelta);
-                float spec = max(0.0, 1.0 - ssd / (r * 0.12));
-                color.rgb += vec3(spec * 0.55);
+                    // Specular highlight
+                    vec2 specOff = vec2(-0.35 / uAspectRatio, -0.35) * r;
+                    vec2 specDelta = delta - specOff;
+                    float ssd = length(specDelta);
+                    float spec = max(0.0, 1.0 - ssd / (r * 0.12));
+                    color.rgb += vec3(spec * 0.55);
 
-                // Dark refractive rim
-                float rim = smoothstep(0.7, 1.0, nd);
-                color.rgb *= (1.0 - rim * 0.30);
+                    // Dark refractive rim
+                    float rim = smoothstep(0.7, 1.0, nd);
+                    color.rgb *= (1.0 - rim * 0.30);
 
-                // Surface-tension inner ring
-                float ring = smoothstep(0.05, 0.20, nd) * (1.0 - smoothstep(0.25, 0.40, nd));
-                color.rgb += ring * 0.06;
+                    // Surface-tension inner ring
+                    float ring = smoothstep(0.05, 0.20, nd) * (1.0 - smoothstep(0.25, 0.40, nd));
+                    color.rgb += ring * 0.06;
+                }
+            } else {
+                // Frosted glass background (no drop at this pixel)
+                color = fogColor;
             }
 
             gl_FragColor = color;
