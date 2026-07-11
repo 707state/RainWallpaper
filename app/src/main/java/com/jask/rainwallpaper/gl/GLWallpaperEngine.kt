@@ -36,7 +36,7 @@ class GLWallpaperEngine(
     // Tilt acceleration in UV/s², written by sensor listener, read by render thread
     @Volatile var tiltAx = 0f
     @Volatile var tiltAy = 0f
-    private val uvScale: Float = 5.0f / config.screenHeightCm // m/s² → UV/s²
+    private val uvScale: Float = 2.0f / config.screenHeightCm // m/s² → UV/s²
     fun start(width: Int, height: Int) {
         surfaceWidth = width
         surfaceHeight = height
@@ -470,22 +470,24 @@ class GLWallpaperEngine(
 // ─── Raindrop physics simulation ─────────────────────────────────────────────
 class RaindropSimulation {
     companion object {
-        private const val DEAD_ZONE = 0.3f      // m/s², below this drops stay still
-        private const val FRICTION_MOVING = 0.996f  // air/glass resistance while sliding
-        private const val FRICTION_DEAD = 0.90f     // strong friction in dead zone
-        private const val BOUNCE_RETAIN = 0.3f      // energy retention on wall bounce
-        private const val MAX_SPEED_UV = 1.2f       // UV/s, terminal velocity cap
+        private const val DEAD_ZONE = 0.3f
+        private const val FRICTION_SMALL = 0.993f  // small drops: low resistance
+        private const val FRICTION_LARGE = 0.987f  // large drops: high resistance
+        private const val FRICTION_DEAD = 0.90f
+        private const val BOUNCE_RETAIN = 0.3f
+        private const val MAX_SPEED_UV = 1.2f
     }
 
     private class Raindrop(
         var x: Float, var y: Float,
         var radius: Float,
-        var vx: Float = 0f, var vy: Float = 0f
+        var vx: Float = 0f, var vy: Float = 0f,
+        var friction: Float = 0f
     )
 
     private var drops: Array<Raindrop?> = arrayOfNulls(8)
-
     fun init(baseRadiusUV: Float) {
+        // Create drops with random positions and radii
         drops = Array(8) {
             val variation = baseRadiusUV * (0.8f + Random.nextFloat() * 0.4f)
             val margin = variation * 1.1f
@@ -494,6 +496,15 @@ class RaindropSimulation {
                 y = margin + Random.nextFloat() * (1f - margin * 2f),
                 radius = variation
             )
+        }
+        // Assign per-drop friction: larger radius → more resistance → lower friction factor
+        val radii = drops.map { it!!.radius }
+        val minR = radii.min()
+        val maxR = radii.max()
+        val range = (maxR - minR).let { if (it < 0.0001f) 1f else it }
+        for (d in drops) {
+            val t = (d!!.radius - minR) / range  // 0=smallest, 1=largest
+            d.friction = FRICTION_LARGE + (FRICTION_SMALL - FRICTION_LARGE) * (1f - t)
         }
     }
 
@@ -522,8 +533,8 @@ class RaindropSimulation {
             d.vy += ay * dt
 
             // Air/glass resistance (friction proportional to velocity)
-            d.vx *= FRICTION_MOVING
-            d.vy *= FRICTION_MOVING
+            d.vx *= d.friction
+            d.vy *= d.friction
 
             // Terminal velocity cap
             val speed = kotlin.math.sqrt(d.vx * d.vx + d.vy * d.vy)
