@@ -1,5 +1,9 @@
 package com.jask.rainwallpaper
 
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -97,11 +101,27 @@ class RainWallpaperService : WallpaperService() {
         private var pendingW = 0
         private var pendingH = 0
 
+        private var sensorManager: SensorManager? = null
+        private var accelerometer: Sensor? = null
+        @Volatile private var tiltAx = 0f
+        @Volatile private var tiltAy = 0f
+
+        private val accelerometerListener = object : SensorEventListener {
+            override fun onSensorChanged(event: SensorEvent) {
+                tiltAx = -event.values[0]
+                tiltAy = event.values[1]
+                glEngine?.tiltAx = tiltAx
+                glEngine?.tiltAy = tiltAy
+            }
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+        }
+
         override fun onCreate(surfaceHolder: SurfaceHolder?) {
             super.onCreate(surfaceHolder)
+            sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
+            accelerometer = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
             loadBitmap()
             ready = true
-            // If surfaceChanged already arrived before onCreate, start now
             if (pendingW > 0 && pendingH > 0) {
                 startGL(pendingW, pendingH)
             }
@@ -145,31 +165,38 @@ class RainWallpaperService : WallpaperService() {
             stopGL()
         }
 
+        private fun startGL(w: Int, h: Int) {
+            stopGL()
+            val metrics = resources.displayMetrics
+            val heightCm = h / (metrics.ydpi / 2.54f)
+            val radiusCm = 0.25f
+            val dropRadiusUV = radiusCm / heightCm
+            glEngine = GLWallpaperEngine(
+                holder = surfaceHolder,
+                bitmap = bitmap,
+                config = GLWallpaperEngine.Config(
+                    effectMode = "rain",
+                    dropRadiusUV = dropRadiusUV,
+                    screenHeightCm = heightCm
+                )
+            )
+            glEngine!!.start(w, h)
+            sensorManager?.registerListener(
+                accelerometerListener, accelerometer,
+                SensorManager.SENSOR_DELAY_GAME
+            )
+        }
+        private fun stopGL() {
+            sensorManager?.unregisterListener(accelerometerListener)
+            glEngine?.stop()
+            glEngine = null
+        }
+
         private fun loadBitmap() {
             val file = File(filesDir, "wallpaper_image.jpg")
             if (file.exists()) {
                 bitmap = BitmapFactory.decodeFile(file.absolutePath)
             }
-        }
-
-        private fun startGL(w: Int, h: Int) {
-            stopGL()
-            // Compute drop radius in height-normalised UV units for ~0.5cm diameter
-            val metrics = resources.displayMetrics
-            val heightCm = h / (metrics.ydpi / 2.54f)
-            val radiusCm = 0.25f // half of 0.5cm diameter
-            val dropRadiusUV = radiusCm / heightCm
-            glEngine = GLWallpaperEngine(
-                holder = surfaceHolder,
-                bitmap = bitmap,
-                config = GLWallpaperEngine.Config(effectMode = "rain", dropRadiusUV = dropRadiusUV)
-            )
-            glEngine!!.start(w, h)
-        }
-
-        private fun stopGL() {
-            glEngine?.stop()
-            glEngine = null
         }
     }
 }

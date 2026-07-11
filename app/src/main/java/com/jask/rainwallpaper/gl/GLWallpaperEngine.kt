@@ -20,7 +20,8 @@ class GLWallpaperEngine(
 ) {
     data class Config(
         val effectMode: String = "none",
-        val dropRadiusUV: Float = 0.016f // ~0.5cm diameter on typical screen
+        val dropRadiusUV: Float = 0.016f,
+        val screenHeightCm: Float = 15f
     )
 
     private var renderThread: RenderThread? = null
@@ -32,7 +33,10 @@ class GLWallpaperEngine(
     private val effectMode: String = config.effectMode
     private val raindrops = RaindropSimulation()
     private val dropRadiusUV: Float = config.dropRadiusUV
-
+    // Tilt acceleration in UV/s², written by sensor listener, read by render thread
+    @Volatile var tiltAx = 0f
+    @Volatile var tiltAy = 0f
+    private val uvScale: Float = 5.0f / config.screenHeightCm // m/s² → UV/s²
     fun start(width: Int, height: Int) {
         surfaceWidth = width
         surfaceHeight = height
@@ -384,6 +388,8 @@ class GLWallpaperEngine(
                 raindrops.fillDropArray(dropData)
             }
 
+            var lastFrameNs = System.nanoTime()
+
             // ─── Render loop ────────────────────────────────────────────────────
             while (running) {
                 if (pendingSurfaceChange) {
@@ -393,10 +399,19 @@ class GLWallpaperEngine(
 
                 if (paused) {
                     Thread.sleep(50)
+                    lastFrameNs = System.nanoTime()
                     continue
                 }
 
                 val frameStart = System.nanoTime()
+                val dt = minOf((frameStart - lastFrameNs) / 1_000_000_000f, 0.05f)
+                lastFrameNs = frameStart
+
+                // Update raindrop physics from tilt sensor
+                if (isRain) {
+                    raindrops.update(dt, tiltAx * uvScale, tiltAy * uvScale)
+                    raindrops.fillDropArray(dropData)
+                }
 
                 // Draw
                 GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
@@ -448,31 +463,96 @@ class GLWallpaperEngine(
             GLES20.glUseProgram(program)
             GLES20.glUniform2f(uCropOffsetLoc, cropOff[0], cropOff[1])
             GLES20.glUniform2f(uCropScaleLoc, cropScale[0], cropScale[1])
-            GLES20.glUniform2f(uResolutionLoc, surfaceWidth.toFloat(), surfaceHeight.toFloat())
-            GLES20.glUniform1f(uAspectRatioLoc, surfaceWidth.toFloat() / surfaceHeight.toFloat())
         }
     }
 }
 
 // ─── Raindrop physics simulation ─────────────────────────────────────────────
-
 class RaindropSimulation {
-    private class Raindrop(val x: Float, val y: Float, var radius: Float)
+    companion object {
+        private const val DEAD_ZONE = 0.3f      // m/s², below this drops stay still
+        private const val FRICTION_MOVING = 0.996f  // air/glass resistance while sliding
+        private const val FRICTION_DEAD = 0.90f     // strong friction in dead zone
+        private const val BOUNCE_RETAIN = 0.3f      // energy retention on wall bounce
+        private const val MAX_SPEED_UV = 1.2f       // UV/s, terminal velocity cap
+    }
+
+    private class Raindrop(
+        var x: Float, var y: Float,
+        var radius: Float,
+        var vx: Float = 0f, var vy: Float = 0f
+    )
 
     private var drops: Array<Raindrop?> = arrayOfNulls(8)
 
-    // Called once before render loop — creates 8 static drops
     fun init(baseRadiusUV: Float) {
-        // ±0.1cm diameter variation → ±20% radius
         drops = Array(8) {
             val variation = baseRadiusUV * (0.8f + Random.nextFloat() * 0.4f)
-            // Position within visible area with margin
             val margin = variation * 1.1f
             Raindrop(
                 x = margin + Random.nextFloat() * (1f - margin * 2f),
                 y = margin + Random.nextFloat() * (1f - margin * 2f),
                 radius = variation
             )
+        }
+    }
+
+    // ax, ay: tilt acceleration in UV/s² (pre-scaled from m/s²)
+    fun update(dt: Float, ax: Float, ay: Float) {
+        val mag = kotlin.math.sqrt(ax * ax + ay * ay)
+
+        if (mag < DEAD_ZONE) {
+            // Dead zone: friction only, bring drops to rest
+            for (i in drops.indices) {
+                val d = drops[i]!!
+                d.vx *= FRICTION_DEAD
+                d.vy *= FRICTION_DEAD
+                if (kotlin.math.abs(d.vx) < 0.0005f && kotlin.math.abs(d.vy) < 0.0005f) continue
+                d.x = (d.x + d.vx * dt).coerceIn(d.radius, 1f - d.radius)
+                d.y = (d.y + d.vy * dt).coerceIn(d.radius, 1f - d.radius)
+            }
+            return
+        }
+
+        for (i in drops.indices) {
+            val d = drops[i]!!
+
+            // Gravitational acceleration: v += a·dt
+            d.vx += ax * dt
+            d.vy += ay * dt
+
+            // Air/glass resistance (friction proportional to velocity)
+            d.vx *= FRICTION_MOVING
+            d.vy *= FRICTION_MOVING
+
+            // Terminal velocity cap
+            val speed = kotlin.math.sqrt(d.vx * d.vx + d.vy * d.vy)
+            if (speed > MAX_SPEED_UV) {
+                d.vx = d.vx / speed * MAX_SPEED_UV
+                d.vy = d.vy / speed * MAX_SPEED_UV
+            }
+
+            // Position: s = v₀t + ½at²
+            d.x += d.vx * dt + 0.5f * ax * dt * dt
+            d.y += d.vy * dt + 0.5f * ay * dt * dt
+
+            // Boundary bounce with energy loss
+            if (d.x < d.radius) {
+                d.x = d.radius
+                d.vx = kotlin.math.abs(d.vx) * BOUNCE_RETAIN
+            }
+            if (d.x > 1f - d.radius) {
+                d.x = 1f - d.radius
+                d.vx = -kotlin.math.abs(d.vx) * BOUNCE_RETAIN
+            }
+            if (d.y < d.radius) {
+                d.y = d.radius
+                d.vy = kotlin.math.abs(d.vy) * BOUNCE_RETAIN
+            }
+            if (d.y > 1f - d.radius) {
+                d.y = 1f - d.radius
+                d.vy = -kotlin.math.abs(d.vy) * BOUNCE_RETAIN
+            }
         }
     }
 
