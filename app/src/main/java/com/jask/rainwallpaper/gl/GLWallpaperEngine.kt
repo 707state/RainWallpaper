@@ -107,6 +107,7 @@ class GLWallpaperEngine(
     private fun createEGLSurface(): Boolean {
         eglSurface = EGL14.eglCreateWindowSurface(eglDisplay, eglConfig, holder.surface, null, 0)
         if (eglSurface == EGL14.EGL_NO_SURFACE) return false
+        EGL14.eglSwapInterval(eglDisplay, 1) // VSync-driven rendering
         return EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
     }
 
@@ -481,9 +482,6 @@ class GLWallpaperEngine(
                 GLES20.glBindBuffer(GLES20.GL_ELEMENT_ARRAY_BUFFER, vboIds[1])
                 GLES20.glDrawElements(GLES20.GL_TRIANGLES, 6, GLES20.GL_UNSIGNED_BYTE, 0)
                 EGL14.eglSwapBuffers(eglDisplay, eglSurface)
-
-                val elapsed = (System.nanoTime() - frameStart) / 1_000_000L
-                if (elapsed < 16) Thread.sleep(16 - elapsed)
             }
 
             // Final cleanup
