@@ -18,13 +18,18 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -56,10 +61,16 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private enum class Effect(val key: String, val label: String) {
+    NONE("none", "None"),
+    RAIN("rain", "Raindrops")
+}
+
 @Composable
 fun WallpaperPicker(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var selectedEffect by remember { mutableStateOf(Effect.NONE) }
     var saved by remember { mutableStateOf(false) }
 
     val pickImageLauncher = rememberLauncherForActivityResult(
@@ -94,17 +105,53 @@ fun WallpaperPicker(modifier: Modifier = Modifier) {
 
         val currentBitmap = bitmap
         if (currentBitmap != null) {
+            // Preview
             Image(
                 bitmap = currentBitmap.asImageBitmap(),
                 contentDescription = "Selected wallpaper preview",
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(400.dp),
+                    .height(320.dp),
                 contentScale = ContentScale.Crop
             )
 
             Spacer(modifier = Modifier.height(16.dp))
 
+            // Effect selector
+            Text(
+                text = "Effect",
+                style = MaterialTheme.typography.titleSmall
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Column(modifier = Modifier.selectableGroup()) {
+                Effect.entries.forEach { effect ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = selectedEffect == effect,
+                                onClick = { selectedEffect = effect }
+                            )
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = selectedEffect == effect,
+                            onClick = null
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = effect.label,
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Action buttons
             Button(onClick = { pickImageLauncher.launch("image/*") }) {
                 Text("Change Image")
             }
@@ -113,6 +160,7 @@ fun WallpaperPicker(modifier: Modifier = Modifier) {
 
             Button(onClick = {
                 saveImageToInternalStorage(context, currentBitmap)
+                saveEffectPreference(context, selectedEffect.key)
                 saved = true
                 openWallpaperPicker(context)
             }) {
@@ -140,6 +188,11 @@ private fun saveImageToInternalStorage(context: Context, bitmap: Bitmap) {
     FileOutputStream(file).use { out ->
         bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
     }
+}
+
+private fun saveEffectPreference(context: Context, effect: String) {
+    val prefs = context.getSharedPreferences("wallpaper_settings", Context.MODE_PRIVATE)
+    prefs.edit().putString("effect_mode", effect).apply()
 }
 
 private fun openWallpaperPicker(context: Context) {
