@@ -137,6 +137,7 @@ class GLWallpaperEngine(
     private var uDropsLoc = 0
     private var uResolutionLoc = 0
     private var uAspectRatioLoc = 0
+    private var uDropVelLoc = 0
     private var vboIds = IntArray(2)
 
     private val VERTEX_SHADER = """
@@ -170,36 +171,57 @@ class GLWallpaperEngine(
         uniform float uAspectRatio;
         uniform int uDropCount;
         uniform vec4 uDrops[8];
+        uniform vec4 uDropVel[8];
         uniform vec2 uResolution;
 
-        // Distance in aspect-corrected UV space (height-normalised)
-        float dropDist(vec2 uv, vec2 center) {
-            vec2 d = uv - center;
-            d.x *= uAspectRatio;
-            return length(d);
+        // Teardrop SDF in velocity-aligned local space
+        // Returns signed distance; negative = inside
+        float sdTeardrop(vec2 p, vec2 velDir, float r, float deform) {
+            if (deform < 0.01) return length(p) - r;
+
+            // Rotate into velocity-aligned frame: +y=head, -y=tail
+            float qx =  p.x * velDir.y - p.y * velDir.x;
+            float qy =  p.x * velDir.x + p.y * velDir.y;
+
+            // Stretch/squeeze
+            qx *= 1.0 / (1.0 + deform * 0.12);
+            qy *= 1.0 / (1.0 + deform * 0.55);
+
+            // Shift toward tail
+            qy -= deform * r * 0.12;
+
+            float d = length(vec2(qx, qy));
+            float angle = atan(qx, -qy + 0.001);
+            float tip = 1.0 + deform * 0.45 * exp(-angle * angle * 4.0);
+            return d - r * tip;
         }
 
         void main() {
             vec2 uv = vTexCoord;
             vec2 imageUV = uv * uCropScale + uCropOffset;
-
-            // Accumulate lens displacement from all raindrops
             vec2 totalOffset = vec2(0.0);
 
             for (int i = 0; i < 8; i++) {
                 if (i >= uDropCount) break;
                 vec2 dp = uDrops[i].xy;
                 float r = uDrops[i].z;
+                float deform = uDrops[i].w;
                 if (r < 0.001) continue;
 
-                float dist = dropDist(uv, dp);
-                if (dist >= r) continue;
+                // Aspect-corrected delta
+                vec2 delta = uv - dp;
+                delta.x *= uAspectRatio;
 
-                // Lens magnification: sample outward from centre
-                float nd = dist / r;
+                float sd = sdTeardrop(delta, uDropVel[i].xy, r, deform);
+                if (sd >= 0.0) continue;
+
+                // Normalised distance inside (0=centre, 1=edge)
+                float nd = clamp(1.0 + sd / r, 0.0, 1.0);
+
+                // Lens magnification
                 float lens = (1.0 - nd * nd) * 0.28;
-                vec2 dir = dist < 0.001 ? vec2(0.0) : normalize(uv - dp);
-                totalOffset += dir * lens * r;
+                vec2 dir = length(delta) < 0.001 ? vec2(0.0) : normalize(delta);
+                totalOffset += dir * lens * (r + deform * r * 0.15);
             }
 
             vec2 finalUV = imageUV + totalOffset;
@@ -211,26 +233,28 @@ class GLWallpaperEngine(
                 if (i >= uDropCount) break;
                 vec2 dp = uDrops[i].xy;
                 float r = uDrops[i].z;
+                float deform = uDrops[i].w;
                 if (r < 0.001) continue;
 
-                float dist = dropDist(uv, dp);
-                if (dist >= r) continue;
+                vec2 delta = uv - dp;
+                delta.x *= uAspectRatio;
+                float sd = sdTeardrop(delta, uDropVel[i].xy, r, deform);
+                if (sd >= 0.0) continue;
 
-                float nd = dist / r;
+                float nd = clamp(1.0 + sd / r, 0.0, 1.0);
 
-                // Specular highlight (top-left offset in aspect-corrected space)
+                // Specular highlight
                 vec2 specOff = vec2(-0.35 / uAspectRatio, -0.35) * r;
-                vec2 specDelta = uv - (dp + specOff);
-                specDelta.x *= uAspectRatio;
-                float sd = length(specDelta);
-                float spec = max(0.0, 1.0 - sd / (r * 0.12));
+                vec2 specDelta = delta - specOff;
+                float ssd = length(specDelta);
+                float spec = max(0.0, 1.0 - ssd / (r * 0.12));
                 color.rgb += vec3(spec * 0.55);
 
-                // Dark refractive rim at droplet edge
+                // Dark refractive rim
                 float rim = smoothstep(0.7, 1.0, nd);
                 color.rgb *= (1.0 - rim * 0.30);
 
-                // Surface-tension inner ring (subtle bright band)
+                // Surface-tension inner ring
                 float ring = smoothstep(0.05, 0.20, nd) * (1.0 - smoothstep(0.25, 0.40, nd));
                 color.rgb += ring * 0.06;
             }
@@ -333,6 +357,7 @@ class GLWallpaperEngine(
             uDropsLoc = GLES20.glGetUniformLocation(program, "uDrops")
             uResolutionLoc = GLES20.glGetUniformLocation(program, "uResolution")
             uAspectRatioLoc = GLES20.glGetUniformLocation(program, "uAspectRatio")
+            uDropVelLoc = GLES20.glGetUniformLocation(program, "uDropVel")
 
             // Full-screen quad: two triangles (strip = 4 verts)
             // x, y, u, v
@@ -383,6 +408,7 @@ class GLWallpaperEngine(
 
             val isRain = effectMode == "rain"
             val dropData = FloatArray(8 * 4)
+            val velData = FloatArray(8 * 4)
             if (isRain) {
                 raindrops.init(dropRadiusUV)
                 raindrops.fillDropArray(dropData)
@@ -411,6 +437,7 @@ class GLWallpaperEngine(
                 if (isRain) {
                     raindrops.update(dt, tiltAx * uvScale, tiltAy * uvScale)
                     raindrops.fillDropArray(dropData)
+                    raindrops.fillVelArray(velData)
                 }
 
                 // Draw
@@ -426,6 +453,15 @@ class GLWallpaperEngine(
                             dropData[i * 4 + 1],
                             dropData[i * 4 + 2],
                             dropData[i * 4 + 3]
+                        )
+                    }
+                    for (i in 0 until 8) {
+                        GLES20.glUniform4f(
+                            uDropVelLoc + i,
+                            velData[i * 4],
+                            velData[i * 4 + 1],
+                            velData[i * 4 + 2],
+                            velData[i * 4 + 3]
                         )
                     }
                 } else {
@@ -476,13 +512,15 @@ class RaindropSimulation {
         private const val FRICTION_DEAD = 0.90f
         private const val BOUNCE_RETAIN = 0.3f
         private const val MAX_SPEED_UV = 1.2f
+        private const val MAX_DEFORM_SPEED = 0.5f  // UV/s for full teardrop
     }
 
     private class Raindrop(
         var x: Float, var y: Float,
         var radius: Float,
         var vx: Float = 0f, var vy: Float = 0f,
-        var friction: Float = 0f
+        var friction: Float = 0f,
+        var deformation: Float = 0f
     )
 
     private var drops: Array<Raindrop?> = arrayOfNulls(8)
@@ -518,6 +556,8 @@ class RaindropSimulation {
                 val d = drops[i]!!
                 d.vx *= FRICTION_DEAD
                 d.vy *= FRICTION_DEAD
+                val speed = kotlin.math.sqrt(d.vx * d.vx + d.vy * d.vy)
+                d.deformation = minOf(speed / MAX_DEFORM_SPEED, 1f)
                 if (kotlin.math.abs(d.vx) < 0.0005f && kotlin.math.abs(d.vy) < 0.0005f) continue
                 d.x = (d.x + d.vx * dt).coerceIn(d.radius, 1f - d.radius)
                 d.y = (d.y + d.vy * dt).coerceIn(d.radius, 1f - d.radius)
@@ -542,6 +582,7 @@ class RaindropSimulation {
                 d.vx = d.vx / speed * MAX_SPEED_UV
                 d.vy = d.vy / speed * MAX_SPEED_UV
             }
+            d.deformation = minOf(speed / MAX_DEFORM_SPEED, 1f)
 
             // Position: s = v₀t + ½at²
             d.x += d.vx * dt + 0.5f * ax * dt * dt
@@ -573,6 +614,18 @@ class RaindropSimulation {
             arr[i * 4] = d.x
             arr[i * 4 + 1] = d.y
             arr[i * 4 + 2] = d.radius
+            arr[i * 4 + 3] = d.deformation
+        }
+    }
+
+    fun fillVelArray(arr: FloatArray) {
+        for (i in drops.indices) {
+            val d = drops[i]!!
+            val speed = kotlin.math.sqrt(d.vx * d.vx + d.vy * d.vy)
+            val invSpeed = if (speed > 0.0001f) 1f / speed else 0f
+            arr[i * 4] = d.vx * invSpeed        // normalised vx
+            arr[i * 4 + 1] = d.vy * invSpeed    // normalised vy
+            arr[i * 4 + 2] = d.deformation
             arr[i * 4 + 3] = 0f
         }
     }
