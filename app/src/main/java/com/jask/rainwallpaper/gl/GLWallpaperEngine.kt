@@ -11,10 +11,6 @@ import android.opengl.EGLSurface
 import android.opengl.GLES20
 import android.opengl.GLUtils
 import android.view.SurfaceHolder
-import kotlin.math.PI
-import kotlin.math.cos
-import kotlin.math.max
-import kotlin.math.min
 import kotlin.random.Random
 
 class GLWallpaperEngine(
@@ -23,7 +19,8 @@ class GLWallpaperEngine(
     config: Config
 ) {
     data class Config(
-        val effectMode: String = "none"
+        val effectMode: String = "none",
+        val dropRadiusUV: Float = 0.016f // ~0.5cm diameter on typical screen
     )
 
     private var renderThread: RenderThread? = null
@@ -34,13 +31,12 @@ class GLWallpaperEngine(
     private var surfaceHeight = 0
     private val effectMode: String = config.effectMode
     private val raindrops = RaindropSimulation()
-    private var startTime = 0L
+    private val dropRadiusUV: Float = config.dropRadiusUV
 
     fun start(width: Int, height: Int) {
         surfaceWidth = width
         surfaceHeight = height
         running = true
-        startTime = System.nanoTime()
         renderThread = RenderThread().apply { start() }
     }
 
@@ -136,6 +132,7 @@ class GLWallpaperEngine(
     private var uDropCountLoc = 0
     private var uDropsLoc = 0
     private var uResolutionLoc = 0
+    private var uAspectRatioLoc = 0
     private var vboIds = IntArray(2)
 
     private val VERTEX_SHADER = """
@@ -166,9 +163,17 @@ class GLWallpaperEngine(
         uniform sampler2D uTexture;
         uniform vec2 uCropOffset;
         uniform vec2 uCropScale;
+        uniform float uAspectRatio;
         uniform int uDropCount;
         uniform vec4 uDrops[8];
         uniform vec2 uResolution;
+
+        // Distance in aspect-corrected UV space (height-normalised)
+        float dropDist(vec2 uv, vec2 center) {
+            vec2 d = uv - center;
+            d.x *= uAspectRatio;
+            return length(d);
+        }
 
         void main() {
             vec2 uv = vTexCoord;
@@ -183,14 +188,13 @@ class GLWallpaperEngine(
                 float r = uDrops[i].z;
                 if (r < 0.001) continue;
 
-                vec2 delta = uv - dp;
-                float dist = length(delta);
+                float dist = dropDist(uv, dp);
                 if (dist >= r) continue;
 
                 // Lens magnification: sample outward from centre
                 float nd = dist / r;
                 float lens = (1.0 - nd * nd) * 0.28;
-                vec2 dir = dist < 0.001 ? vec2(0.0) : normalize(delta);
+                vec2 dir = dist < 0.001 ? vec2(0.0) : normalize(uv - dp);
                 totalOffset += dir * lens * r;
             }
 
@@ -205,15 +209,16 @@ class GLWallpaperEngine(
                 float r = uDrops[i].z;
                 if (r < 0.001) continue;
 
-                vec2 delta = uv - dp;
-                float dist = length(delta);
+                float dist = dropDist(uv, dp);
                 if (dist >= r) continue;
 
                 float nd = dist / r;
 
-                // Specular highlight (top-left offset)
-                vec2 specOff = vec2(-0.35, -0.35) * r;
-                float sd = length(delta - specOff);
+                // Specular highlight (top-left offset in aspect-corrected space)
+                vec2 specOff = vec2(-0.35 / uAspectRatio, -0.35) * r;
+                vec2 specDelta = uv - (dp + specOff);
+                specDelta.x *= uAspectRatio;
+                float sd = length(specDelta);
                 float spec = max(0.0, 1.0 - sd / (r * 0.12));
                 color.rgb += vec3(spec * 0.55);
 
@@ -323,14 +328,15 @@ class GLWallpaperEngine(
             uDropCountLoc = GLES20.glGetUniformLocation(program, "uDropCount")
             uDropsLoc = GLES20.glGetUniformLocation(program, "uDrops")
             uResolutionLoc = GLES20.glGetUniformLocation(program, "uResolution")
+            uAspectRatioLoc = GLES20.glGetUniformLocation(program, "uAspectRatio")
 
             // Full-screen quad: two triangles (strip = 4 verts)
             // x, y, u, v
             val verts = floatArrayOf(
-                -1f, -1f, 0f, 0f,
-                1f, -1f, 1f, 0f,
-                -1f, 1f, 0f, 1f,
-                1f, 1f, 1f, 1f
+                -1f, -1f, 0f, 1f,
+                1f, -1f, 1f, 1f,
+                -1f, 1f, 0f, 0f,
+                1f, 1f, 1f, 0f
             )
             val idx = byteArrayOf(0, 1, 2, 1, 3, 2)
 
@@ -368,14 +374,17 @@ class GLWallpaperEngine(
             val (cropOff, cropScale) = computeCropParams(imgW, imgH, surfaceWidth.toFloat(), surfaceHeight.toFloat())
             GLES20.glUniform2f(uCropOffsetLoc, cropOff[0], cropOff[1])
             GLES20.glUniform2f(uCropScaleLoc, cropScale[0], cropScale[1])
-            GLES20.glUniform2f(uResolutionLoc, surfaceWidth.toFloat(), surfaceHeight.toFloat())
+            val aspectRatio = surfaceWidth.toFloat() / surfaceHeight.toFloat()
+            GLES20.glUniform1f(uAspectRatioLoc, aspectRatio)
 
             val isRain = effectMode == "rain"
             val dropData = FloatArray(8 * 4)
-            val frameTime = 1f / 60f
-            var lastFrameNs = System.nanoTime()
+            if (isRain) {
+                raindrops.init(dropRadiusUV)
+                raindrops.fillDropArray(dropData)
+            }
 
-            // ─── Render loop ────────────────────────────────────────────────────────
+            // ─── Render loop ────────────────────────────────────────────────────
             while (running) {
                 if (pendingSurfaceChange) {
                     handleSurfaceChange()
@@ -384,19 +393,10 @@ class GLWallpaperEngine(
 
                 if (paused) {
                     Thread.sleep(50)
-                    lastFrameNs = System.nanoTime()
                     continue
                 }
 
-                val now = System.nanoTime()
-                val dt = min((now - lastFrameNs) / 1_000_000_000f, 0.05f)
-                lastFrameNs = now
-
-                // Update raindrops
-                if (isRain) {
-                    raindrops.update(dt)
-                    raindrops.fillDropArray(dropData)
-                }
+                val frameStart = System.nanoTime()
 
                 // Draw
                 GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
@@ -404,7 +404,6 @@ class GLWallpaperEngine(
 
                 if (isRain) {
                     GLES20.glUniform1i(uDropCountLoc, 8)
-                    // Set each vec4 uniform individually
                     for (i in 0 until 8) {
                         GLES20.glUniform4f(
                             uDropsLoc + i,
@@ -422,10 +421,10 @@ class GLWallpaperEngine(
                 GLES20.glDrawElements(GLES20.GL_TRIANGLES, 6, GLES20.GL_UNSIGNED_BYTE, 0)
                 EGL14.eglSwapBuffers(eglDisplay, eglSurface)
 
-                // Throttle to ~60 fps
-                val frameElapsed = (System.nanoTime() - now) / 1_000_000L
-                if (frameElapsed < 16) {
-                    Thread.sleep(16 - frameElapsed)
+                // Throttle ~60 fps
+                val elapsed = (System.nanoTime() - frameStart) / 1_000_000L
+                if (elapsed < 16) {
+                    Thread.sleep(16 - elapsed)
                 }
             }
 
@@ -450,6 +449,7 @@ class GLWallpaperEngine(
             GLES20.glUniform2f(uCropOffsetLoc, cropOff[0], cropOff[1])
             GLES20.glUniform2f(uCropScaleLoc, cropScale[0], cropScale[1])
             GLES20.glUniform2f(uResolutionLoc, surfaceWidth.toFloat(), surfaceHeight.toFloat())
+            GLES20.glUniform1f(uAspectRatioLoc, surfaceWidth.toFloat() / surfaceHeight.toFloat())
         }
     }
 }
@@ -457,102 +457,32 @@ class GLWallpaperEngine(
 // ─── Raindrop physics simulation ─────────────────────────────────────────────
 
 class RaindropSimulation {
-    private class Raindrop(
-        var x: Float,
-        var y: Float,
-        var radius: Float,
-        var speed: Float,
-        var wobblePhase: Float,
-        var wobbleAmp: Float
-    )
+    private class Raindrop(val x: Float, val y: Float, var radius: Float)
 
-    private val drops = Array(8) { createRandomDrop() }
-    private var time = 0f
+    private var drops: Array<Raindrop?> = arrayOfNulls(8)
 
-    private fun createRandomDrop(): Raindrop {
-        return Raindrop(
-            x = Random.nextFloat(),
-            y = Random.nextFloat() * -0.4f,     // start above visible area
-            radius = 0.025f + Random.nextFloat() * 0.045f,
-            speed = 0.08f + Random.nextFloat() * 0.18f,
-            wobblePhase = Random.nextFloat() * (PI.toFloat() * 2f),
-            wobbleAmp = 0.0015f + Random.nextFloat() * 0.0035f
-        )
-    }
-
-    fun update(dt: Float) {
-        time += dt
-        val stepDt = min(dt, 0.05f)
-
-        for (i in drops.indices) {
-            val drop = drops[i]
-            if (drop.radius <= 0f) continue
-
-            // Gravity: slide downward
-            drop.y += drop.speed * stepDt
-
-            // Wobble: horizontal oscillation
-            drop.wobblePhase += stepDt * (1.8f + drop.speed * 2f)
-            drop.x += kotlin.math.sin(drop.wobblePhase) * drop.wobbleAmp * stepDt * 60f
-
-            // Reset when past bottom
-            if (drop.y > 1.0f + drop.radius) {
-                drops[i] = createRandomDrop()
-                continue
-            }
-
-            // Bounce horizontally within bounds
-            if (drop.x < drop.radius) {
-                drop.x = drop.radius
-                drop.wobblePhase += PI.toFloat() // reverse direction
-            }
-            if (drop.x > 1f - drop.radius) {
-                drop.x = 1f - drop.radius
-                drop.wobblePhase += PI.toFloat()
-            }
-        }
-
-        // Merge overlapping drops (only check each pair once)
-        for (i in drops.indices) {
-            val a = drops[i]
-            if (a.radius <= 0f) continue
-            for (j in i + 1 until drops.size) {
-                val b = drops[j]
-                if (b.radius <= 0f) continue
-
-                val dx = a.x - b.x
-                val dy = a.y - b.y
-                val dist = kotlin.math.sqrt(dx * dx + dy * dy)
-                val overlap = (a.radius + b.radius) * 0.75f
-                if (dist < overlap && dist > 0.0001f) {
-                    // Larger absorbs smaller
-                    if (a.radius >= b.radius) {
-                        // Merge: conserve area
-                        val totalArea = PI.toFloat() * (a.radius * a.radius + b.radius * b.radius)
-                        a.radius = kotlin.math.sqrt(totalArea / PI.toFloat())
-                        a.radius = min(a.radius, 0.12f) // cap max size
-                        a.speed = max(a.speed, b.speed) // heavier = faster
-                        // Reset smaller drop
-                        drops[j] = createRandomDrop()
-                    } else {
-                        val totalArea = PI.toFloat() * (a.radius * a.radius + b.radius * b.radius)
-                        b.radius = kotlin.math.sqrt(totalArea / PI.toFloat())
-                        b.radius = min(b.radius, 0.12f)
-                        b.speed = max(b.speed, a.speed)
-                        drops[i] = createRandomDrop()
-                        break // i was absorbed, move on
-                    }
-                }
-            }
+    // Called once before render loop — creates 8 static drops
+    fun init(baseRadiusUV: Float) {
+        // ±0.1cm diameter variation → ±20% radius
+        drops = Array(8) {
+            val variation = baseRadiusUV * (0.8f + Random.nextFloat() * 0.4f)
+            // Position within visible area with margin
+            val margin = variation * 1.1f
+            Raindrop(
+                x = margin + Random.nextFloat() * (1f - margin * 2f),
+                y = margin + Random.nextFloat() * (1f - margin * 2f),
+                radius = variation
+            )
         }
     }
 
     fun fillDropArray(arr: FloatArray) {
         for (i in drops.indices) {
-            arr[i * 4] = drops[i].x
-            arr[i * 4 + 1] = drops[i].y
-            arr[i * 4 + 2] = drops[i].radius
-            arr[i * 4 + 3] = 0f // padding/unused
+            val d = drops[i]!!
+            arr[i * 4] = d.x
+            arr[i * 4 + 1] = d.y
+            arr[i * 4 + 2] = d.radius
+            arr[i * 4 + 3] = 0f
         }
     }
 }

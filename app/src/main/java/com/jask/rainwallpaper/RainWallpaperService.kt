@@ -154,10 +154,15 @@ class RainWallpaperService : WallpaperService() {
 
         private fun startGL(w: Int, h: Int) {
             stopGL()
+            // Compute drop radius in height-normalised UV units for ~0.5cm diameter
+            val metrics = resources.displayMetrics
+            val heightCm = h / (metrics.ydpi / 2.54f)
+            val radiusCm = 0.25f // half of 0.5cm diameter
+            val dropRadiusUV = radiusCm / heightCm
             glEngine = GLWallpaperEngine(
                 holder = surfaceHolder,
                 bitmap = bitmap,
-                config = GLWallpaperEngine.Config(effectMode = "rain")
+                config = GLWallpaperEngine.Config(effectMode = "rain", dropRadiusUV = dropRadiusUV)
             )
             glEngine!!.start(w, h)
         }
