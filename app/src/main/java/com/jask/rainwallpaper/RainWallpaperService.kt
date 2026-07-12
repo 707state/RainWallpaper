@@ -21,7 +21,7 @@ class RainWallpaperService : WallpaperService() {
     override fun onCreateEngine(): Engine {
         val prefs = getSharedPreferences("wallpaper_settings", Context.MODE_PRIVATE)
         val effect = prefs.getString("effect_mode", "none") ?: "none"
-        return if (effect == "rain") GLEngine() else ImageEngine()
+        return if (effect == "gravity_bubble") GLEngine() else ImageEngine()
     }
 
     // ─── Canvas-based engine (no effect / fallback) ──────────────────────────
@@ -92,7 +92,7 @@ class RainWallpaperService : WallpaperService() {
         }
     }
 
-    // ─── GL engine (rain effect) ─────────────────────────────────────────────
+    // ─── GL engine (gravity bubble effect) ───────────────────────────────────
 
     private inner class GLEngine : Engine() {
         private var glEngine: GLWallpaperEngine? = null
@@ -175,7 +175,7 @@ class RainWallpaperService : WallpaperService() {
                 holder = surfaceHolder,
                 bitmap = bitmap,
                 config = GLWallpaperEngine.Config(
-                    effectMode = "rain",
+                    effectMode = "gravity_bubble",
                     dropRadiusUV = dropRadiusUV,
                     screenHeightCm = heightCm
                 )

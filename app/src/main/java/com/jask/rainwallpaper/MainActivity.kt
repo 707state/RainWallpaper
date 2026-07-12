@@ -63,7 +63,7 @@ class MainActivity : ComponentActivity() {
 
 private enum class Effect(val key: String, val label: String) {
     NONE("none", "None"),
-    RAIN("rain", "Raindrops")
+    GRAVITY_BUBBLE("gravity_bubble", "Gravity Bubbles")
 }
 
 @Composable
@@ -97,7 +97,7 @@ fun WallpaperPicker(modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.Center
     ) {
         Text(
-            text = "Rain Wallpaper",
+            text = "Gravity Bubble Wallpaper",
             style = MaterialTheme.typography.headlineMedium
         )
 

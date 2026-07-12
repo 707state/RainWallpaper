@@ -32,7 +32,7 @@ class GLWallpaperEngine(
     private var surfaceWidth = 0
     private var surfaceHeight = 0
     private val effectMode: String = config.effectMode
-    private val raindrops = RaindropSimulation()
+    private val bubbles = BubbleSimulation()
     private val dropRadiusUV: Float = config.dropRadiusUV
     // Tilt acceleration in UV/s², written by sensor listener, read by render thread
     @Volatile var tiltAx = 0f
@@ -135,11 +135,11 @@ class GLWallpaperEngine(
     private var uTextureLoc = 0
     private var uCropOffsetLoc = 0
     private var uCropScaleLoc = 0
-    private var uDropCountLoc = 0
-    private var uDropsLoc = 0
+    private var uBubbleCountLoc = 0
+    private var uBubblesLoc = 0
     private var uResolutionLoc = 0
     private var uAspectRatioLoc = 0
-    private var uDropVelLoc = 0
+    private var uBubbleVelLoc = 0
     private var vboIds = IntArray(2)
 
     private val VERTEX_SHADER = """
@@ -164,19 +164,19 @@ class GLWallpaperEngine(
         }
     """.trimIndent()
 
-    private val FRAGMENT_SHADER_RAIN = """
+    private val FRAGMENT_SHADER_BUBBLE = """
         precision highp float;
         varying vec2 vTexCoord;
         uniform sampler2D uTexture;
         uniform vec2 uCropOffset;
         uniform vec2 uCropScale;
         uniform float uAspectRatio;
-        uniform int uDropCount;
-        uniform vec4 uDrops[8];
-        uniform vec4 uDropVel[8];
+        uniform int uBubbleCount;
+        uniform vec4 uBubbles[8];
+        uniform vec4 uBubbleVel[8];
         uniform vec2 uResolution;
 
-        float sdTeardrop(vec2 p, vec2 velDir, float r, float deform) {
+        float sdBubble(vec2 p, vec2 velDir, float r, float deform) {
             if (deform < 0.01) return length(p) - r;
             float qx =  p.x * velDir.y - p.y * velDir.x;
             float qy =  p.x * velDir.x + p.y * velDir.y;
@@ -189,8 +189,8 @@ class GLWallpaperEngine(
             return d - r * tip;
         }
 
-        // Dome surface normal for a droplet (LiquidGlass-style)
-        vec3 dropNormal(vec2 delta, float r, float sd) {
+        // Dome surface normal for a bubble (LiquidGlass-style)
+        vec3 bubbleNormal(vec2 delta, float r, float sd) {
             float nd = clamp(-sd / r, 0.0, 1.0);  // 0 at edge, 1 at centre
             vec2 radial = length(delta) < 0.0001 ? vec2(0.0) : normalize(delta);
             // Steep wall at edge (nd=0), flat at centre (nd=1)
@@ -213,15 +213,15 @@ class GLWallpaperEngine(
             float bestR = 0.0;
 
             for (int i = 0; i < 8; i++) {
-                if (i >= uDropCount) break;
-                vec2 dp = uDrops[i].xy;
-                float r = uDrops[i].z;
-                float deform = uDrops[i].w;
+                if (i >= uBubbleCount) break;
+                vec2 dp = uBubbles[i].xy;
+                float r = uBubbles[i].z;
+                float deform = uBubbles[i].w;
                 if (r < 0.001) continue;
 
                 vec2 delta = uv - dp;
                 delta.x *= uAspectRatio;
-                float sd = sdTeardrop(delta, uDropVel[i].xy, r, deform);
+                float sd = sdBubble(delta, uBubbleVel[i].xy, r, deform);
                 if (sd >= 0.0) continue;
 
                 float nd = clamp(-sd / r, 0.0, 1.0);
@@ -233,7 +233,7 @@ class GLWallpaperEngine(
                 totalOffset += dir * lens * (r + deform * r * 0.15);
 
                 // Dome surface normal for specular
-                vec3 normal = dropNormal(delta, r, sd);
+                vec3 normal = bubbleNormal(delta, r, sd);
                 vec3 lightDir = normalize(vec3(-0.5 / uAspectRatio, -0.5, 1.0));
                 vec3 halfVec = normalize(lightDir + vec3(0.0, 0.0, 1.0));
                 float spec = pow(max(dot(normal, halfVec), 0.0), 48.0);
@@ -253,7 +253,7 @@ class GLWallpaperEngine(
 
             vec4 color;
             if (bestND >= 0.0) {
-                // Inside at least one drop: apply radial blur gradient
+                // Inside at least one bubble: apply radial blur gradient
                 float blurFactor = (1.0 - bestND);  // 0=centre, 1=edge
                 blurFactor = blurFactor * blurFactor; // quadratic falloff
                 float blurRadius = blurFactor * bestR * 0.5;
@@ -359,7 +359,7 @@ class GLWallpaperEngine(
 
     private inner class RenderThread : Thread("GL-Render") {
         override fun run() {
-            var isRain = false
+            var isBubble = false
             var dropData = FloatArray(8)
             var velData = FloatArray(8)
             var lastFrameNs = 0L
@@ -388,7 +388,7 @@ class GLWallpaperEngine(
                 if (!eglActive) {
                     if (!initEGL()) { running = false; break }
                     textureId = loadTexture(bitmap)
-                    val fragSrc = if (effectMode == "rain") FRAGMENT_SHADER_RAIN else FRAGMENT_SHADER_NO_EFFECT
+                    val fragSrc = if (effectMode == "gravity_bubble") FRAGMENT_SHADER_BUBBLE else FRAGMENT_SHADER_NO_EFFECT
                     program = createProgram(VERTEX_SHADER, fragSrc)
                     if (program == 0) { releaseEGL(); running = false; break }
 
@@ -397,11 +397,11 @@ class GLWallpaperEngine(
                     uTextureLoc = GLES20.glGetUniformLocation(program, "uTexture")
                     uCropOffsetLoc = GLES20.glGetUniformLocation(program, "uCropOffset")
                     uCropScaleLoc = GLES20.glGetUniformLocation(program, "uCropScale")
-                    uDropCountLoc = GLES20.glGetUniformLocation(program, "uDropCount")
-                    uDropsLoc = GLES20.glGetUniformLocation(program, "uDrops")
+                    uBubbleCountLoc = GLES20.glGetUniformLocation(program, "uBubbleCount")
+                    uBubblesLoc = GLES20.glGetUniformLocation(program, "uBubbles")
                     uResolutionLoc = GLES20.glGetUniformLocation(program, "uResolution")
                     uAspectRatioLoc = GLES20.glGetUniformLocation(program, "uAspectRatio")
-                    uDropVelLoc = GLES20.glGetUniformLocation(program, "uDropVel")
+                    uBubbleVelLoc = GLES20.glGetUniformLocation(program, "uBubbleVel")
 
                     val verts = floatArrayOf(
                         -1f, -1f, 0f, 1f,  1f, -1f, 1f, 1f,
@@ -438,12 +438,12 @@ class GLWallpaperEngine(
                     GLES20.glUniform2f(uCropScaleLoc, cs[0], cs[1])
                     GLES20.glUniform1f(uAspectRatioLoc, surfaceWidth.toFloat() / surfaceHeight.toFloat())
 
-                    isRain = effectMode == "rain"
+                    isBubble = effectMode == "gravity_bubble"
                     dropData = FloatArray(8 * 4)
                     velData = FloatArray(8 * 4)
-                    if (isRain) {
-                        raindrops.init(dropRadiusUV)
-                        raindrops.fillDropArray(dropData)
+                    if (isBubble) {
+                        bubbles.init(dropRadiusUV)
+                        bubbles.fillDropArray(dropData)
                     }
                     lastFrameNs = System.nanoTime()
                     idleFrames = 0
@@ -454,10 +454,10 @@ class GLWallpaperEngine(
                 val dt = minOf((frameStart - lastFrameNs) / 1_000_000_000f, 0.05f)
                 lastFrameNs = frameStart
 
-                val anyMoving = if (isRain) {
-                    val m = raindrops.update(dt, tiltAx * uvScale, tiltAy * uvScale)
-                    raindrops.fillDropArray(dropData)
-                    raindrops.fillVelArray(velData)
+                val anyMoving = if (isBubble) {
+                    val m = bubbles.update(dt, tiltAx * uvScale, tiltAy * uvScale)
+                    bubbles.fillDropArray(dropData)
+                    bubbles.fillVelArray(velData)
                     m
                 } else false
 
@@ -470,14 +470,14 @@ class GLWallpaperEngine(
                 // Draw
                 GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
                 GLES20.glUseProgram(program)
-                if (isRain) {
-                    GLES20.glUniform1i(uDropCountLoc, 8)
+                if (isBubble) {
+                    GLES20.glUniform1i(uBubbleCountLoc, 8)
                     for (i in 0 until 8) {
-                        GLES20.glUniform4f(uDropsLoc + i, dropData[i*4], dropData[i*4+1], dropData[i*4+2], dropData[i*4+3])
-                        GLES20.glUniform4f(uDropVelLoc + i, velData[i*4], velData[i*4+1], velData[i*4+2], velData[i*4+3])
+                        GLES20.glUniform4f(uBubblesLoc + i, dropData[i*4], dropData[i*4+1], dropData[i*4+2], dropData[i*4+3])
+                        GLES20.glUniform4f(uBubbleVelLoc + i, velData[i*4], velData[i*4+1], velData[i*4+2], velData[i*4+3])
                     }
                 } else {
-                    GLES20.glUniform1i(uDropCountLoc, 0)
+                    GLES20.glUniform1i(uBubbleCountLoc, 0)
                 }
                 GLES20.glBindBuffer(GLES20.GL_ELEMENT_ARRAY_BUFFER, vboIds[1])
                 GLES20.glDrawElements(GLES20.GL_TRIANGLES, 6, GLES20.GL_UNSIGNED_BYTE, 0)
@@ -510,19 +510,19 @@ class GLWallpaperEngine(
     }
 }
 
-// ─── Raindrop physics simulation ─────────────────────────────────────────────
-class RaindropSimulation {
+// ─── Gravity bubble physics simulation ───────────────────────────────────────
+class BubbleSimulation {
     companion object {
         private const val DEAD_ZONE = 0.3f
-        private const val FRICTION_SMALL = 0.993f  // small drops: low resistance
-        private const val FRICTION_LARGE = 0.987f  // large drops: high resistance
+        private const val FRICTION_SMALL = 0.993f  // small bubbles: low resistance
+        private const val FRICTION_LARGE = 0.987f  // large bubbles: high resistance
         private const val FRICTION_DEAD = 0.90f
         private const val BOUNCE_RETAIN = 0.3f
         private const val MAX_SPEED_UV = 1.2f
-        private const val MAX_DEFORM_SPEED = 0.5f  // UV/s for full teardrop
+        private const val MAX_DEFORM_SPEED = 0.5f  // UV/s for full bubble deformation
     }
 
-    private class Raindrop(
+    private class Bubble(
         var x: Float, var y: Float,
         var radius: Float,
         var vx: Float = 0f, var vy: Float = 0f,
@@ -530,26 +530,26 @@ class RaindropSimulation {
         var deformation: Float = 0f
     )
 
-    private var drops: Array<Raindrop?> = arrayOfNulls(8)
+    private var bubbles: Array<Bubble?> = arrayOfNulls(8)
     fun init(baseRadiusUV: Float) {
-        // Create drops with random positions and radii
-        drops = Array(8) {
+        // Create bubbles with random positions and radii
+        bubbles = Array(8) {
             val variation = baseRadiusUV * (0.8f + Random.nextFloat() * 0.4f)
             val margin = variation * 1.1f
-            Raindrop(
+            Bubble(
                 x = margin + Random.nextFloat() * (1f - margin * 2f),
                 y = margin + Random.nextFloat() * (1f - margin * 2f),
                 radius = variation
             )
         }
-        // Assign per-drop friction: larger radius → more resistance → lower friction factor
-        val radii = drops.map { it!!.radius }
+        // Assign per-bubble friction: larger radius → more resistance → lower friction factor
+        val radii = bubbles.map { it!!.radius }
         val minR = radii.min()
         val maxR = radii.max()
         val range = (maxR - minR).let { if (it < 0.0001f) 1f else it }
-        for (d in drops) {
-            val t = (d!!.radius - minR) / range  // 0=smallest, 1=largest
-            d.friction = FRICTION_LARGE + (FRICTION_SMALL - FRICTION_LARGE) * (1f - t)
+        for (b in bubbles) {
+            val t = (b!!.radius - minR) / range  // 0=smallest, 1=largest
+            b.friction = FRICTION_LARGE + (FRICTION_SMALL - FRICTION_LARGE) * (1f - t)
         }
     }
 
@@ -559,61 +559,61 @@ class RaindropSimulation {
 
         if (mag < DEAD_ZONE) {
             var anyMoving = false
-            for (i in drops.indices) {
-                val d = drops[i]!!
-                d.vx *= FRICTION_DEAD
-                d.vy *= FRICTION_DEAD
-                val speed = kotlin.math.sqrt(d.vx * d.vx + d.vy * d.vy)
-                d.deformation = minOf(speed / MAX_DEFORM_SPEED, 1f)
-                if (kotlin.math.abs(d.vx) < 0.0002f && kotlin.math.abs(d.vy) < 0.0002f) continue
+            for (i in bubbles.indices) {
+                val b = bubbles[i]!!
+                b.vx *= FRICTION_DEAD
+                b.vy *= FRICTION_DEAD
+                val speed = kotlin.math.sqrt(b.vx * b.vx + b.vy * b.vy)
+                b.deformation = minOf(speed / MAX_DEFORM_SPEED, 1f)
+                if (kotlin.math.abs(b.vx) < 0.0002f && kotlin.math.abs(b.vy) < 0.0002f) continue
                 anyMoving = true
-                d.x = (d.x + d.vx * dt).coerceIn(d.radius, 1f - d.radius)
-                d.y = (d.y + d.vy * dt).coerceIn(d.radius, 1f - d.radius)
+                b.x = (b.x + b.vx * dt).coerceIn(b.radius, 1f - b.radius)
+                b.y = (b.y + b.vy * dt).coerceIn(b.radius, 1f - b.radius)
             }
             return anyMoving
         }
 
-        for (i in drops.indices) {
-            val d = drops[i]!!
-            d.vx += ax * dt
-            d.vy += ay * dt
-            d.vx *= d.friction
-            d.vy *= d.friction
-            val speed = kotlin.math.sqrt(d.vx * d.vx + d.vy * d.vy)
+        for (i in bubbles.indices) {
+            val b = bubbles[i]!!
+            b.vx += ax * dt
+            b.vy += ay * dt
+            b.vx *= b.friction
+            b.vy *= b.friction
+            val speed = kotlin.math.sqrt(b.vx * b.vx + b.vy * b.vy)
             if (speed > MAX_SPEED_UV) {
-                d.vx = d.vx / speed * MAX_SPEED_UV
-                d.vy = d.vy / speed * MAX_SPEED_UV
+                b.vx = b.vx / speed * MAX_SPEED_UV
+                b.vy = b.vy / speed * MAX_SPEED_UV
             }
-            d.deformation = minOf(speed / MAX_DEFORM_SPEED, 1f)
-            d.x += d.vx * dt + 0.5f * ax * dt * dt
-            d.y += d.vy * dt + 0.5f * ay * dt * dt
+            b.deformation = minOf(speed / MAX_DEFORM_SPEED, 1f)
+            b.x += b.vx * dt + 0.5f * ax * dt * dt
+            b.y += b.vy * dt + 0.5f * ay * dt * dt
 
-            if (d.x < d.radius) { d.x = d.radius; d.vx = kotlin.math.abs(d.vx) * BOUNCE_RETAIN }
-            if (d.x > 1f - d.radius) { d.x = 1f - d.radius; d.vx = -kotlin.math.abs(d.vx) * BOUNCE_RETAIN }
-            if (d.y < d.radius) { d.y = d.radius; d.vy = kotlin.math.abs(d.vy) * BOUNCE_RETAIN }
-            if (d.y > 1f - d.radius) { d.y = 1f - d.radius; d.vy = -kotlin.math.abs(d.vy) * BOUNCE_RETAIN }
+            if (b.x < b.radius) { b.x = b.radius; b.vx = kotlin.math.abs(b.vx) * BOUNCE_RETAIN }
+            if (b.x > 1f - b.radius) { b.x = 1f - b.radius; b.vx = -kotlin.math.abs(b.vx) * BOUNCE_RETAIN }
+            if (b.y < b.radius) { b.y = b.radius; b.vy = kotlin.math.abs(b.vy) * BOUNCE_RETAIN }
+            if (b.y > 1f - b.radius) { b.y = 1f - b.radius; b.vy = -kotlin.math.abs(b.vy) * BOUNCE_RETAIN }
         }
         return true
     }
 
     fun fillDropArray(arr: FloatArray) {
-        for (i in drops.indices) {
-            val d = drops[i]!!
-            arr[i * 4] = d.x
-            arr[i * 4 + 1] = d.y
-            arr[i * 4 + 2] = d.radius
-            arr[i * 4 + 3] = d.deformation
+        for (i in bubbles.indices) {
+            val b = bubbles[i]!!
+            arr[i * 4] = b.x
+            arr[i * 4 + 1] = b.y
+            arr[i * 4 + 2] = b.radius
+            arr[i * 4 + 3] = b.deformation
         }
     }
 
     fun fillVelArray(arr: FloatArray) {
-        for (i in drops.indices) {
-            val d = drops[i]!!
-            val speed = kotlin.math.sqrt(d.vx * d.vx + d.vy * d.vy)
+        for (i in bubbles.indices) {
+            val b = bubbles[i]!!
+            val speed = kotlin.math.sqrt(b.vx * b.vx + b.vy * b.vy)
             val invSpeed = if (speed > 0.0001f) 1f / speed else 0f
-            arr[i * 4] = d.vx * invSpeed        // normalised vx
-            arr[i * 4 + 1] = d.vy * invSpeed    // normalised vy
-            arr[i * 4 + 2] = d.deformation
+            arr[i * 4] = b.vx * invSpeed        // normalised vx
+            arr[i * 4 + 1] = b.vy * invSpeed    // normalised vy
+            arr[i * 4 + 2] = b.deformation
             arr[i * 4 + 3] = 0f
         }
     }
