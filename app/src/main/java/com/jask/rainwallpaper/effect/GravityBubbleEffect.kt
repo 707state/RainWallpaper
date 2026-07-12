@@ -14,8 +14,8 @@ class GravityBubbleEffect : GLEffect {
         uniform vec2 uCropScale;
         uniform float uAspectRatio;
         uniform int uBubbleCount;
-        uniform vec4 uBubbles[8];
-        uniform vec4 uBubbleVel[8];
+        uniform vec4 uBubbles[10];
+        uniform vec4 uBubbleVel[10];
         uniform vec2 uResolution;
 
         float sdBubble(vec2 p, vec2 velDir, float r, float deform) {
@@ -54,7 +54,7 @@ class GravityBubbleEffect : GLEffect {
             float bestND = -1.0;
             float bestR = 0.0;
 
-            for (int i = 0; i < 8; i++) {
+            for (int i = 0; i < 10; i++) {
                 if (i >= uBubbleCount) break;
                 vec2 dp = uBubbles[i].xy;
                 float r = uBubbles[i].z;
@@ -150,11 +150,11 @@ class BubbleSimulation : Simulation {
         var deformation: Float = 0f
     )
 
-    private var bubbles: Array<Bubble?> = arrayOfNulls(8)
+    private var bubbles: Array<Bubble?> = arrayOfNulls(10)
 
     override fun init(baseRadiusUV: Float) {
         // Create bubbles with random positions and radii
-        bubbles = Array(8) {
+        bubbles = Array(10) {
             val variation = baseRadiusUV * (0.8f + Random.nextFloat() * 0.4f)
             val margin = variation * 1.1f
             Bubble(

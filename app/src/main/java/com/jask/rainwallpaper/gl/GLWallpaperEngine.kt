@@ -241,8 +241,8 @@ class GLWallpaperEngine(
     private inner class RenderThread : Thread("GL-Render") {
         override fun run() {
             var simulation: Simulation? = null
-            var dropData = FloatArray(8)
-            var velData = FloatArray(8)
+            var dropData = FloatArray(10)
+            var velData = FloatArray(10)
             var lastFrameNs = 0L
             var idleFrames = 0
 
@@ -320,8 +320,8 @@ class GLWallpaperEngine(
                     GLES20.glUniform1f(uAspectRatioLoc, surfaceWidth.toFloat() / surfaceHeight.toFloat())
 
                     simulation = effect?.createSimulation()
-                    dropData = FloatArray(8 * 4)
-                    velData = FloatArray(8 * 4)
+                    dropData = FloatArray(10 * 4)
+                    velData = FloatArray(10 * 4)
                     simulation?.let {
                         it.init(dropRadiusUV)
                         it.fillDropArray(dropData)
@@ -352,8 +352,8 @@ class GLWallpaperEngine(
                 GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
                 GLES20.glUseProgram(program)
                 if (simulation != null) {
-                    GLES20.glUniform1i(uBubbleCountLoc, 8)
-                    for (i in 0 until 8) {
+                    GLES20.glUniform1i(uBubbleCountLoc, 10)
+                    for (i in 0 until 10) {
                         GLES20.glUniform4f(uBubblesLoc + i, dropData[i*4], dropData[i*4+1], dropData[i*4+2], dropData[i*4+3])
                         GLES20.glUniform4f(uBubbleVelLoc + i, velData[i*4], velData[i*4+1], velData[i*4+2], velData[i*4+3])
                     }
