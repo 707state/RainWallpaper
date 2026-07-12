@@ -14,6 +14,8 @@ import android.graphics.RectF
 import android.service.wallpaper.WallpaperService
 import android.view.SurfaceHolder
 import com.jask.rainwallpaper.gl.GLWallpaperEngine
+import com.jask.rainwallpaper.effect.Effects
+import com.jask.rainwallpaper.effect.GLEffect
 import java.io.File
 
 class RainWallpaperService : WallpaperService() {
@@ -21,7 +23,8 @@ class RainWallpaperService : WallpaperService() {
     override fun onCreateEngine(): Engine {
         val prefs = getSharedPreferences("wallpaper_settings", Context.MODE_PRIVATE)
         val effect = prefs.getString("effect_mode", "none") ?: "none"
-        return if (effect == "gravity_bubble") GLEngine() else ImageEngine()
+        val glEffect = Effects.fromKey(effect)
+        return if (glEffect != null) GLEngine(glEffect) else ImageEngine()
     }
 
     // ─── Canvas-based engine (no effect / fallback) ──────────────────────────
@@ -92,9 +95,9 @@ class RainWallpaperService : WallpaperService() {
         }
     }
 
-    // ─── GL engine (gravity bubble effect) ───────────────────────────────────
+    // ─── GL engine (effect-driven) ───────────────────────────────────────────
 
-    private inner class GLEngine : Engine() {
+    private inner class GLEngine(private val glEffect: GLEffect) : Engine() {
         private var glEngine: GLWallpaperEngine? = null
         private var bitmap: Bitmap? = null
         private var ready = false
@@ -175,7 +178,7 @@ class RainWallpaperService : WallpaperService() {
                 holder = surfaceHolder,
                 bitmap = bitmap,
                 config = GLWallpaperEngine.Config(
-                    effectMode = "gravity_bubble",
+                    effect = glEffect,
                     dropRadiusUV = dropRadiusUV,
                     screenHeightCm = heightCm
                 )

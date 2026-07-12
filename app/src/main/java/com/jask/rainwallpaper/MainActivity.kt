@@ -44,6 +44,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.jask.rainwallpaper.ui.theme.RainWallpaperTheme
+import com.jask.rainwallpaper.effect.Effects
 import java.io.File
 import java.io.FileOutputStream
 
@@ -61,16 +62,12 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Effect(val key: String, val label: String) {
-    NONE("none", "None"),
-    GRAVITY_BUBBLE("gravity_bubble", "Gravity Bubbles")
-}
 
 @Composable
 fun WallpaperPicker(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var selectedEffect by remember { mutableStateOf(Effect.NONE) }
+    var selectedKey by remember { mutableStateOf("none") }
     var saved by remember { mutableStateOf(false) }
 
     val pickImageLauncher = rememberLauncherForActivityResult(
@@ -125,24 +122,24 @@ fun WallpaperPicker(modifier: Modifier = Modifier) {
             Spacer(modifier = Modifier.height(8.dp))
 
             Column(modifier = Modifier.selectableGroup()) {
-                Effect.entries.forEach { effect ->
+                Effects.uiChoices().forEach { choice ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .selectable(
-                                selected = selectedEffect == effect,
-                                onClick = { selectedEffect = effect }
+                                selected = selectedKey == choice.key,
+                                onClick = { selectedKey = choice.key }
                             )
                             .padding(vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         RadioButton(
-                            selected = selectedEffect == effect,
+                            selected = selectedKey == choice.key,
                             onClick = null
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = effect.label,
+                            text = choice.label,
                             style = MaterialTheme.typography.bodyLarge
                         )
                     }
@@ -160,7 +157,7 @@ fun WallpaperPicker(modifier: Modifier = Modifier) {
 
             Button(onClick = {
                 saveImageToInternalStorage(context, currentBitmap)
-                saveEffectPreference(context, selectedEffect.key)
+                saveEffectPreference(context, selectedKey)
                 saved = true
                 openWallpaperPicker(context)
             }) {
