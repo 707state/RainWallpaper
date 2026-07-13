@@ -17,9 +17,10 @@ object Effects {
 
     val GRAVITY_BUBBLE = GravityBubbleEffect()
     val SNOWFALL = SnowfallEffect()
+    val RAINDROP = RaindropEffect()
 
     /** Every available GL effect (excluding the none sentinel). */
-    fun all(): List<GLEffect> = listOf(GRAVITY_BUBBLE, SNOWFALL)
+    fun all(): List<GLEffect> = listOf(GRAVITY_BUBBLE, SNOWFALL, RAINDROP)
 
     /** Look up an effect by its persisted [key]. Returns null when the key is unknown. */
     fun fromKey(key: String): GLEffect? = all().firstOrNull { it.key == key }

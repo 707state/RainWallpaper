@@ -140,6 +140,7 @@ class GLWallpaperEngine(
     private var uResolutionLoc = 0
     private var uAspectRatioLoc = 0
     private var uBubbleVelLoc = 0
+    private var uTimeLoc = 0
     private var vboIds = IntArray(2)
 
     private val VERTEX_SHADER = """
@@ -245,6 +246,7 @@ class GLWallpaperEngine(
             var velData = FloatArray(10)
             var lastFrameNs = 0L
             var idleFrames = 0
+            var timeSeconds = 0f
 
             // ─── Render loop ────────────────────────────────────────────────────
             while (running) {
@@ -283,6 +285,7 @@ class GLWallpaperEngine(
                     uResolutionLoc = GLES20.glGetUniformLocation(program, "uResolution")
                     uAspectRatioLoc = GLES20.glGetUniformLocation(program, "uAspectRatio")
                     uBubbleVelLoc = GLES20.glGetUniformLocation(program, "uBubbleVel")
+                    uTimeLoc = GLES20.glGetUniformLocation(program, "uTime")
 
                     val verts = floatArrayOf(
                         -1f, -1f, 0f, 1f,  1f, -1f, 1f, 1f,
@@ -318,6 +321,7 @@ class GLWallpaperEngine(
                     GLES20.glUniform2f(uCropOffsetLoc, co[0], co[1])
                     GLES20.glUniform2f(uCropScaleLoc, cs[0], cs[1])
                     GLES20.glUniform1f(uAspectRatioLoc, surfaceWidth.toFloat() / surfaceHeight.toFloat())
+                    GLES20.glUniform2f(uResolutionLoc, surfaceWidth.toFloat(), surfaceHeight.toFloat())
 
                     simulation = effect?.createSimulation()
                     dropData = FloatArray(10 * 4)
@@ -334,6 +338,7 @@ class GLWallpaperEngine(
                 val frameStart = System.nanoTime()
                 val dt = minOf((frameStart - lastFrameNs) / 1_000_000_000f, 0.05f)
                 lastFrameNs = frameStart
+                timeSeconds += dt
 
                 val anyMoving = simulation?.let {
                     val m = it.update(dt, tiltAx * uvScale, tiltAy * uvScale)
@@ -351,6 +356,7 @@ class GLWallpaperEngine(
                 // Draw
                 GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
                 GLES20.glUseProgram(program)
+                GLES20.glUniform1f(uTimeLoc, timeSeconds)
                 if (simulation != null) {
                     GLES20.glUniform1i(uBubbleCountLoc, 10)
                     for (i in 0 until 10) {
@@ -387,6 +393,7 @@ class GLWallpaperEngine(
             GLES20.glUseProgram(program)
             GLES20.glUniform2f(uCropOffsetLoc, cropOff[0], cropOff[1])
             GLES20.glUniform2f(uCropScaleLoc, cropScale[0], cropScale[1])
+            GLES20.glUniform2f(uResolutionLoc, surfaceWidth.toFloat(), surfaceHeight.toFloat())
         }
     }
 }
