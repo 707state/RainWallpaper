@@ -8,6 +8,8 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.os.Handler
+import android.os.Looper
 import android.service.wallpaper.WallpaperService
 import android.view.SurfaceHolder
 import com.jask.rainwallpaper.effect.Effects
@@ -41,6 +43,13 @@ class RainWallpaperService : WallpaperService() {
 
         private var sensorManager: SensorManager? = null
         private var accelerometer: Sensor? = null
+        private val mainHandler = Handler(Looper.getMainLooper())
+        private val releaseInvisibleResources = Runnable {
+            if (!visible) {
+                stopGL()
+                recycleBitmap()
+            }
+        }
 
         private val accelerometerListener = object : SensorEventListener {
             override fun onSensorChanged(event: SensorEvent) {
@@ -70,28 +79,38 @@ class RainWallpaperService : WallpaperService() {
             surfaceHeight = height
             surfaceAvailable = true
 
-            glEngine?.surfaceChanged(width, height) ?: startGL()
+            glEngine?.surfaceChanged(width, height) ?: if (visible) {
+                ensureRendererAvailable()
+            } else {
+                scheduleInvisibleResourceRelease()
+            }
         }
 
         override fun onVisibilityChanged(visible: Boolean) {
             super.onVisibilityChanged(visible)
             this.visible = visible
+            mainHandler.removeCallbacks(releaseInvisibleResources)
             if (visible) {
+                ensureRendererAvailable()
                 glEngine?.resume()
                 registerSensorIfNeeded()
             } else {
                 unregisterSensor()
                 glEngine?.pause()
+                scheduleInvisibleResourceRelease()
             }
         }
 
         override fun onSurfaceDestroyed(holder: SurfaceHolder?) {
             surfaceAvailable = false
+            mainHandler.removeCallbacks(releaseInvisibleResources)
             stopGL()
+            recycleBitmap()
             super.onSurfaceDestroyed(holder)
         }
 
         override fun onDestroy() {
+            mainHandler.removeCallbacks(releaseInvisibleResources)
             preferences.unregisterOnSharedPreferenceChangeListener(this)
             stopGL()
             recycleBitmap()
@@ -112,17 +131,40 @@ class RainWallpaperService : WallpaperService() {
         private fun reloadConfiguration() {
             // Preference callbacks are delivered on the writer's thread. In this
             // app they originate from the main thread, matching Engine callbacks.
+            mainHandler.removeCallbacks(releaseInvisibleResources)
             stopGL()
             recycleBitmap()
-            loadConfiguration()
-            if (surfaceAvailable) {
-                startGL()
+            effect = readConfiguredEffect()
+            if (visible) {
+                ensureRendererAvailable()
+            } else {
+                scheduleInvisibleResourceRelease()
             }
         }
 
         private fun loadConfiguration() {
-            effect = Effects.fromKey(preferences.getString(EFFECT_MODE_KEY, "none") ?: "none")
+            effect = readConfiguredEffect()
             bitmap = decodeWallpaperBitmap()
+        }
+
+        private fun readConfiguredEffect(): GLEffect? =
+            Effects.fromKey(preferences.getString(EFFECT_MODE_KEY, "none") ?: "none")
+
+        private fun scheduleInvisibleResourceRelease() {
+            mainHandler.removeCallbacks(releaseInvisibleResources)
+            mainHandler.postDelayed(
+                releaseInvisibleResources,
+                INVISIBLE_RESOURCE_RELEASE_DELAY_MS
+            )
+        }
+
+        private fun ensureRendererAvailable() {
+            if (bitmap == null) {
+                bitmap = decodeWallpaperBitmap()
+            }
+            if (glEngine == null && surfaceAvailable) {
+                startGL()
+            }
         }
 
         private fun decodeWallpaperBitmap(): Bitmap? {
@@ -185,5 +227,6 @@ class RainWallpaperService : WallpaperService() {
         const val WALLPAPER_FILE_NAME = "wallpaper_image.jpg"
 
         private const val DROP_RADIUS_CM = 0.25f
+        private const val INVISIBLE_RESOURCE_RELEASE_DELAY_MS = 60_000L
     }
 }

@@ -26,6 +26,7 @@ class GLWallpaperEngine(
     )
 
     private var renderThread: RenderThread? = null
+    private val renderStateLock = Object()
     @Volatile private var running = false
     @Volatile private var paused = false
     @Volatile private var pendingSurfaceChange = false
@@ -46,7 +47,10 @@ class GLWallpaperEngine(
     }
 
     fun stop() {
-        running = false
+        synchronized(renderStateLock) {
+            running = false
+            renderStateLock.notifyAll()
+        }
         renderThread?.join(2000)
         renderThread = null
     }
@@ -56,7 +60,10 @@ class GLWallpaperEngine(
     }
 
     fun resume() {
-        paused = false
+        synchronized(renderStateLock) {
+            paused = false
+            renderStateLock.notifyAll()
+        }
     }
 
     fun surfaceChanged(width: Int, height: Int) {
@@ -254,7 +261,11 @@ class GLWallpaperEngine(
             // ─── Render loop ────────────────────────────────────────────────────
             while (running) {
                 if (pendingSurfaceChange) {
-                    handleSurfaceChange()
+                    // A paused engine has already released EGL. In that case the
+                    // normal initialization path will use the latest dimensions.
+                    if (eglActive) {
+                        handleSurfaceChange()
+                    }
                     pendingSurfaceChange = false
                 }
 
@@ -266,7 +277,11 @@ class GLWallpaperEngine(
                         releaseEGL()
                         eglActive = false
                     }
-                    Thread.sleep(500)
+                    synchronized(renderStateLock) {
+                        while (running && paused) {
+                            renderStateLock.wait()
+                        }
+                    }
                     lastFrameNs = System.nanoTime()
                     nextFrameNs = lastFrameNs
                     continue
