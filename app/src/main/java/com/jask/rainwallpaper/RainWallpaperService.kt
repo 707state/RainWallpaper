@@ -1,133 +1,62 @@
 package com.jask.rainwallpaper
 
+import android.content.Context
+import android.content.SharedPreferences
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.RectF
 import android.service.wallpaper.WallpaperService
 import android.view.SurfaceHolder
-import com.jask.rainwallpaper.gl.GLWallpaperEngine
 import com.jask.rainwallpaper.effect.Effects
 import com.jask.rainwallpaper.effect.GLEffect
+import com.jask.rainwallpaper.gl.GLWallpaperEngine
 import java.io.File
 
 class RainWallpaperService : WallpaperService() {
 
-    override fun onCreateEngine(): Engine {
-        val prefs = getSharedPreferences("wallpaper_settings", Context.MODE_PRIVATE)
-        val effect = prefs.getString("effect_mode", "none") ?: "none"
-        val glEffect = Effects.fromKey(effect)
-        return if (glEffect != null) GLEngine(glEffect) else ImageEngine()
-    }
+    override fun onCreateEngine(): Engine = ConfigurableEngine()
 
-    // ─── Canvas-based engine (no effect / fallback) ──────────────────────────
+    /**
+     * A single engine handles both pass-through rendering and effects. Keeping the
+     * engine type stable lets an already active live wallpaper reload its image
+     * and effect without relying on Android to recreate the WallpaperService.
+     */
+    private inner class ConfigurableEngine : Engine(),
+        SharedPreferences.OnSharedPreferenceChangeListener {
 
-    private inner class ImageEngine : Engine() {
-        private var bitmap: Bitmap? = null
-
-        override fun onCreate(surfaceHolder: SurfaceHolder?) {
-            super.onCreate(surfaceHolder)
-            loadBitmap()
+        private val preferences by lazy {
+            getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
         }
 
-        override fun onSurfaceChanged(
-            holder: SurfaceHolder?,
-            format: Int,
-            width: Int,
-            height: Int
-        ) {
-            super.onSurfaceChanged(holder, format, width, height)
-            drawWallpaper()
-        }
-
-        override fun onVisibilityChanged(visible: Boolean) {
-            super.onVisibilityChanged(visible)
-            if (visible) drawWallpaper()
-        }
-
-        override fun onOffsetsChanged(
-            xOffset: Float, yOffset: Float,
-            xStep: Float, yStep: Float,
-            xPixels: Int, yPixels: Int
-        ) {
-            super.onOffsetsChanged(xOffset, yOffset, xStep, yStep, xPixels, yPixels)
-            drawWallpaper()
-        }
-
-        private fun loadBitmap() {
-            val file = File(filesDir, "wallpaper_image.jpg")
-            if (file.exists()) {
-                bitmap = BitmapFactory.decodeFile(file.absolutePath)
-            }
-        }
-
-        private fun drawWallpaper() {
-            val holder = surfaceHolder ?: return
-            var canvas: Canvas? = null
-            try {
-                canvas = holder.lockCanvas() ?: return
-
-                val bmp = bitmap
-                if (bmp != null && !bmp.isRecycled) {
-                    val cw = canvas.width.toFloat()
-                    val ch = canvas.height.toFloat()
-                    val sx = cw / bmp.width.toFloat()
-                    val sy = ch / bmp.height.toFloat()
-                    val s = maxOf(sx, sy)
-                    val sw = bmp.width * s
-                    val sh = bmp.height * s
-                    val l = (cw - sw) / 2f
-                    val t = (ch - sh) / 2f
-                    canvas.drawBitmap(bmp, null, RectF(l, t, l + sw, t + sh), Paint(Paint.FILTER_BITMAP_FLAG))
-                } else {
-                    canvas.drawColor(Color.parseColor("#1a1a2e"))
-                }
-            } finally {
-                canvas?.let { holder.unlockCanvasAndPost(it) }
-            }
-        }
-    }
-
-    // ─── GL engine (effect-driven) ───────────────────────────────────────────
-
-    private inner class GLEngine(private val glEffect: GLEffect) : Engine() {
         private var glEngine: GLWallpaperEngine? = null
         private var bitmap: Bitmap? = null
-        private var ready = false
-        private var pendingW = 0
-        private var pendingH = 0
+        private var effect: GLEffect? = null
+        private var surfaceWidth = 0
+        private var surfaceHeight = 0
+        private var surfaceAvailable = false
+        private var visible = false
 
         private var sensorManager: SensorManager? = null
         private var accelerometer: Sensor? = null
-        @Volatile private var tiltAx = 0f
-        @Volatile private var tiltAy = 0f
 
         private val accelerometerListener = object : SensorEventListener {
             override fun onSensorChanged(event: SensorEvent) {
-                tiltAx = -event.values[0]
-                tiltAy = event.values[1]
-                glEngine?.tiltAx = tiltAx
-                glEngine?.tiltAy = tiltAy
+                glEngine?.tiltAx = -event.values[0]
+                glEngine?.tiltAy = event.values[1]
             }
-            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
         }
 
         override fun onCreate(surfaceHolder: SurfaceHolder?) {
             super.onCreate(surfaceHolder)
             sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
             accelerometer = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-            loadBitmap()
-            ready = true
-            if (pendingW > 0 && pendingH > 0) {
-                startGL(pendingW, pendingH)
-            }
+            preferences.registerOnSharedPreferenceChangeListener(this)
+            loadConfiguration()
         }
 
         override fun onSurfaceChanged(
@@ -137,69 +66,124 @@ class RainWallpaperService : WallpaperService() {
             height: Int
         ) {
             super.onSurfaceChanged(holder, format, width, height)
-            if (!ready) {
-                pendingW = width
-                pendingH = height
-                return
-            }
-            glEngine?.let {
-                it.surfaceChanged(width, height)
-            } ?: run {
-                startGL(width, height)
-            }
+            surfaceWidth = width
+            surfaceHeight = height
+            surfaceAvailable = true
+
+            glEngine?.surfaceChanged(width, height) ?: startGL()
         }
 
         override fun onVisibilityChanged(visible: Boolean) {
             super.onVisibilityChanged(visible)
+            this.visible = visible
             if (visible) {
                 glEngine?.resume()
+                registerSensorIfNeeded()
             } else {
+                unregisterSensor()
                 glEngine?.pause()
             }
         }
 
         override fun onSurfaceDestroyed(holder: SurfaceHolder?) {
-            super.onSurfaceDestroyed(holder)
+            surfaceAvailable = false
             stopGL()
+            super.onSurfaceDestroyed(holder)
         }
 
         override fun onDestroy() {
-            super.onDestroy()
+            preferences.unregisterOnSharedPreferenceChangeListener(this)
             stopGL()
+            recycleBitmap()
+            super.onDestroy()
         }
 
-        private fun startGL(w: Int, h: Int) {
+        override fun onSharedPreferenceChanged(
+            sharedPreferences: SharedPreferences?,
+            key: String?
+        ) {
+            // A save updates both the effect and revision in one editor. Listen
+            // only to the revision marker so one user action rebuilds GL once.
+            if (key == CONFIG_REVISION_KEY) {
+                reloadConfiguration()
+            }
+        }
+
+        private fun reloadConfiguration() {
+            // Preference callbacks are delivered on the writer's thread. In this
+            // app they originate from the main thread, matching Engine callbacks.
             stopGL()
+            recycleBitmap()
+            loadConfiguration()
+            if (surfaceAvailable) {
+                startGL()
+            }
+        }
+
+        private fun loadConfiguration() {
+            effect = Effects.fromKey(preferences.getString(EFFECT_MODE_KEY, "none") ?: "none")
+            bitmap = decodeWallpaperBitmap()
+        }
+
+        private fun decodeWallpaperBitmap(): Bitmap? {
+            val file = File(filesDir, WALLPAPER_FILE_NAME)
+            return if (file.exists()) BitmapFactory.decodeFile(file.absolutePath) else null
+        }
+
+        private fun recycleBitmap() {
+            bitmap?.takeUnless(Bitmap::isRecycled)?.recycle()
+            bitmap = null
+        }
+
+        private fun startGL() {
+            if (!surfaceAvailable || surfaceWidth <= 0 || surfaceHeight <= 0) return
+
             val metrics = resources.displayMetrics
-            val heightCm = h / (metrics.ydpi / 2.54f)
-            val radiusCm = 0.25f
-            val dropRadiusUV = radiusCm / heightCm
+            val heightCm = surfaceHeight / (metrics.ydpi / 2.54f)
+            val safeHeightCm = heightCm.coerceAtLeast(1f)
+            val dropRadiusUV = DROP_RADIUS_CM / safeHeightCm
+
             glEngine = GLWallpaperEngine(
                 holder = surfaceHolder,
                 bitmap = bitmap,
                 config = GLWallpaperEngine.Config(
-                    effect = glEffect,
+                    effect = effect,
                     dropRadiusUV = dropRadiusUV,
-                    screenHeightCm = heightCm
+                    screenHeightCm = safeHeightCm
                 )
-            )
-            glEngine!!.start(w, h)
-            sensorManager?.registerListener(
-                accelerometerListener, accelerometer,
-                SensorManager.SENSOR_DELAY_GAME
-            )
+            ).also {
+                it.start(surfaceWidth, surfaceHeight)
+                if (!visible) it.pause()
+            }
+            registerSensorIfNeeded()
         }
+
         private fun stopGL() {
-            sensorManager?.unregisterListener(accelerometerListener)
+            unregisterSensor()
             glEngine?.stop()
             glEngine = null
         }
 
-        private fun loadBitmap() {
-            val file = File(filesDir, "wallpaper_image.jpg")
-            if (file.exists()) {
-                bitmap = BitmapFactory.decodeFile(file.absolutePath)
-            }
+        private fun registerSensorIfNeeded() {
+            if (!visible || effect?.usesSensors != true) return
+            sensorManager?.registerListener(
+                accelerometerListener,
+                accelerometer,
+                SensorManager.SENSOR_DELAY_GAME
+            )
         }
+
+        private fun unregisterSensor() {
+            sensorManager?.unregisterListener(accelerometerListener)
+        }
+    }
+
+    companion object {
+        const val PREFERENCES_NAME = "wallpaper_settings"
+        const val EFFECT_MODE_KEY = "effect_mode"
+        const val CONFIG_REVISION_KEY = "config_revision"
+        const val WALLPAPER_FILE_NAME = "wallpaper_image.jpg"
+
+        private const val DROP_RADIUS_CM = 0.25f
     }
 }

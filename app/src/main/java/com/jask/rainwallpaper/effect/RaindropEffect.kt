@@ -22,6 +22,10 @@ package com.jask.rainwallpaper.effect
 class RaindropEffect : GLEffect {
     override val key = "raindrop"
     override val label = "Raindrop Glass"
+    override val targetFps = 30
+    override val usesSensors = false
+    override val usesSimulationUniforms = false
+    override val isTimeDriven = true
 
     override val fragmentShader = """
         precision highp float;
@@ -137,24 +141,29 @@ class RaindropEffect : GLEffect {
             vec2 n = vec2(cx - c.x, cy - c.x);
 
             // ---- Gaussian blur (ported to ES2.0-compliant constant loops) ----
-            const float Pi = 6.28318530718;
-            const int DIRECTIONS = 32;
-            const int QUALITY = 8;
-            float Size = 32.0;
-            vec2 Radius = Size / uResolution.xy;
-
+            // Eight compile-time directions avoid evaluating sin/cos for every
+            // fragment. Four radial taps keep the glass blur while reducing the
+            // background reads from 256 to 32 per pixel.
+            const int DIRECTIONS = 8;
+            const int QUALITY = 4;
+            const float BLUR_SIZE = 20.0;
+            vec2 radius = BLUR_SIZE / uResolution.xy;
+            const mat2 ROTATE_45 = mat2(
+                0.70710678, 0.70710678,
+                -0.70710678, 0.70710678
+            );
+            vec2 direction = vec2(1.0, 0.0);
             vec3 col = texture2D(uTexture, imageUV).rgb;
 
             for (int d = 0; d < DIRECTIONS; d++) {
-                float ang = Pi * float(d) / float(DIRECTIONS);
                 for (int i = 1; i <= QUALITY; i++) {
                     float fi = float(i) / float(QUALITY);
-                    vec3 tex = texture2D(uTexture, imageUV + n + vec2(cos(ang), sin(ang)) * Radius * fi).rgb;
-                    col += tex;
+                    col += texture2D(uTexture, imageUV + n + direction * radius * fi).rgb;
                 }
+                direction = ROTATE_45 * direction;
             }
 
-            col /= float(QUALITY * DIRECTIONS);
+            col /= float(QUALITY * DIRECTIONS + 1);
 
             vec3 tex = texture2D(uTexture, imageUV + n).rgb;
             c.y = clamp(c.y, 0.0, 1.0);
@@ -166,27 +175,5 @@ class RaindropEffect : GLEffect {
         }
     """.trimIndent()
 
-    override fun createSimulation(): Simulation = RaindropSimulation()
-}
-
-// ─── Raindrop simulation ─────────────────────────────────────────────────────
-//
-// The raindrop shader is fully procedural (time-only). There is nothing to
-// simulate per-drop, so this simulation is a no-op: it never writes meaningful
-// drop/velocity data (the shader ignores uBubbles/uBubbleVel) and always
-// returns true from [update] so the render loop keeps drawing every frame —
-// the rain must animate continuously regardless of device tilt.
-
-class RaindropSimulation : Simulation {
-    override fun init(baseRadiusUV: Float) {}
-
-    override fun update(dt: Float, ax: Float, ay: Float): Boolean = true
-
-    override fun fillDropArray(arr: FloatArray) {
-        java.util.Arrays.fill(arr, 0f)
-    }
-
-    override fun fillVelArray(arr: FloatArray) {
-        java.util.Arrays.fill(arr, 0f)
-    }
+    override fun createSimulation(): Simulation? = null
 }

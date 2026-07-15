@@ -245,8 +245,11 @@ class GLWallpaperEngine(
             var dropData = FloatArray(10)
             var velData = FloatArray(10)
             var lastFrameNs = 0L
+            var nextFrameNs = 0L
             var idleFrames = 0
             var timeSeconds = 0f
+            val targetFps = (effect?.targetFps ?: 60).coerceIn(1, 120)
+            val targetFrameNs = 1_000_000_000L / targetFps
 
             // ─── Render loop ────────────────────────────────────────────────────
             while (running) {
@@ -265,6 +268,7 @@ class GLWallpaperEngine(
                     }
                     Thread.sleep(500)
                     lastFrameNs = System.nanoTime()
+                    nextFrameNs = lastFrameNs
                     continue
                 }
 
@@ -324,28 +328,44 @@ class GLWallpaperEngine(
                     GLES20.glUniform2f(uResolutionLoc, surfaceWidth.toFloat(), surfaceHeight.toFloat())
 
                     simulation = effect?.createSimulation()
-                    dropData = FloatArray(10 * 4)
-                    velData = FloatArray(10 * 4)
+                    if (effect?.usesSimulationUniforms == true) {
+                        dropData = FloatArray(10 * 4)
+                        velData = FloatArray(10 * 4)
+                    }
                     simulation?.let {
                         it.init(dropRadiusUV)
-                        it.fillDropArray(dropData)
+                        if (effect?.usesSimulationUniforms == true) {
+                            it.fillDropArray(dropData)
+                            it.fillVelArray(velData)
+                        }
                     }
                     lastFrameNs = System.nanoTime()
+                    nextFrameNs = lastFrameNs
                     idleFrames = 0
                     eglActive = true
                 }
 
-                val frameStart = System.nanoTime()
+                var frameStart = System.nanoTime()
+                val remainingNs = nextFrameNs - frameStart
+                if (remainingNs > 0L) {
+                    java.util.concurrent.locks.LockSupport.parkNanos(remainingNs)
+                    frameStart = System.nanoTime()
+                }
+                nextFrameNs = maxOf(nextFrameNs + targetFrameNs, frameStart)
+
                 val dt = minOf((frameStart - lastFrameNs) / 1_000_000_000f, 0.05f)
                 lastFrameNs = frameStart
                 timeSeconds += dt
 
-                val anyMoving = simulation?.let {
-                    val m = it.update(dt, tiltAx * uvScale, tiltAy * uvScale)
-                    it.fillDropArray(dropData)
-                    it.fillVelArray(velData)
-                    m
+                val simulationMoving = simulation?.let {
+                    val moving = it.update(dt, tiltAx * uvScale, tiltAy * uvScale)
+                    if (effect?.usesSimulationUniforms == true) {
+                        it.fillDropArray(dropData)
+                        it.fillVelArray(velData)
+                    }
+                    moving
                 } ?: false
+                val anyMoving = simulationMoving || effect?.isTimeDriven == true
 
                 idleFrames = if (anyMoving) 0 else (idleFrames + 1)
                 if (idleFrames > 30) {
@@ -356,14 +376,22 @@ class GLWallpaperEngine(
                 // Draw
                 GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
                 GLES20.glUseProgram(program)
-                GLES20.glUniform1f(uTimeLoc, timeSeconds)
-                if (simulation != null) {
-                    GLES20.glUniform1i(uBubbleCountLoc, 10)
-                    for (i in 0 until 10) {
-                        GLES20.glUniform4f(uBubblesLoc + i, dropData[i*4], dropData[i*4+1], dropData[i*4+2], dropData[i*4+3])
-                        GLES20.glUniform4f(uBubbleVelLoc + i, velData[i*4], velData[i*4+1], velData[i*4+2], velData[i*4+3])
+                if (uTimeLoc >= 0) {
+                    GLES20.glUniform1f(uTimeLoc, timeSeconds)
+                }
+                if (simulation != null && effect?.usesSimulationUniforms == true) {
+                    if (uBubbleCountLoc >= 0) {
+                        GLES20.glUniform1i(uBubbleCountLoc, 10)
                     }
-                } else {
+                    for (i in 0 until 10) {
+                        if (uBubblesLoc >= 0) {
+                            GLES20.glUniform4f(uBubblesLoc + i, dropData[i*4], dropData[i*4+1], dropData[i*4+2], dropData[i*4+3])
+                        }
+                        if (uBubbleVelLoc >= 0) {
+                            GLES20.glUniform4f(uBubbleVelLoc + i, velData[i*4], velData[i*4+1], velData[i*4+2], velData[i*4+3])
+                        }
+                    }
+                } else if (uBubbleCountLoc >= 0) {
                     GLES20.glUniform1i(uBubbleCountLoc, 0)
                 }
                 GLES20.glBindBuffer(GLES20.GL_ELEMENT_ARRAY_BUFFER, vboIds[1])

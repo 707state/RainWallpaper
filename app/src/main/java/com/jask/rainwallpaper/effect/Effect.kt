@@ -13,8 +13,24 @@ interface GLEffect {
     /** GLSL fragment shader source (precision, uniforms, main). */
     val fragmentShader: String
 
-    /** Create a fresh simulation instance for this effect. */
-    fun createSimulation(): Simulation
+    /** Maximum render cadence for this effect. */
+    val targetFps: Int
+        get() = 60
+
+    /** Whether this effect reacts to accelerometer input. */
+    val usesSensors: Boolean
+        get() = true
+
+    /** Whether per-element simulation arrays must be uploaded every frame. */
+    val usesSimulationUniforms: Boolean
+        get() = true
+
+    /** Whether time alone continuously changes the rendered output. */
+    val isTimeDriven: Boolean
+        get() = false
+
+    /** Create a fresh simulation instance, or null for a shader-only effect. */
+    fun createSimulation(): Simulation?
 }
 
 /**

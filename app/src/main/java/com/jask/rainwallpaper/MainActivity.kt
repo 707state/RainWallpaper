@@ -156,8 +156,7 @@ fun WallpaperPicker(modifier: Modifier = Modifier) {
             Spacer(modifier = Modifier.height(8.dp))
 
             Button(onClick = {
-                saveImageToInternalStorage(context, currentBitmap)
-                saveEffectPreference(context, selectedKey)
+                saveWallpaperConfiguration(context, currentBitmap, selectedKey)
                 saved = true
                 openWallpaperPicker(context)
             }) {
@@ -167,7 +166,7 @@ fun WallpaperPicker(modifier: Modifier = Modifier) {
             if (saved) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "Image saved! Select \"RainWallpaper\" from the wallpaper picker.",
+                    text = "Image saved! Confirm RainWallpaper in the wallpaper preview.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary
                 )
@@ -180,19 +179,36 @@ fun WallpaperPicker(modifier: Modifier = Modifier) {
     }
 }
 
-private fun saveImageToInternalStorage(context: Context, bitmap: Bitmap) {
-    val file = File(context.filesDir, "wallpaper_image.jpg")
-    FileOutputStream(file).use { out ->
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
+private fun saveWallpaperConfiguration(context: Context, bitmap: Bitmap, effect: String) {
+    // Write to a temporary file first so the active wallpaper never observes a
+    // partially written JPEG when the preference change triggers its reload.
+    val targetFile = File(context.filesDir, RainWallpaperService.WALLPAPER_FILE_NAME)
+    val temporaryFile = File(context.filesDir, "${RainWallpaperService.WALLPAPER_FILE_NAME}.tmp")
+    FileOutputStream(temporaryFile).use { out ->
+        check(bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)) {
+            "Unable to encode wallpaper image"
+        }
+        out.fd.sync()
     }
-}
+    check(temporaryFile.renameTo(targetFile)) {
+        "Unable to replace wallpaper image"
+    }
 
-private fun saveEffectPreference(context: Context, effect: String) {
-    val prefs = context.getSharedPreferences("wallpaper_settings", Context.MODE_PRIVATE)
-    prefs.edit().putString("effect_mode", effect).apply()
+    val preferences = context.getSharedPreferences(
+        RainWallpaperService.PREFERENCES_NAME,
+        Context.MODE_PRIVATE
+    )
+    val nextRevision = preferences.getLong(RainWallpaperService.CONFIG_REVISION_KEY, 0L) + 1L
+    preferences.edit()
+        .putString(RainWallpaperService.EFFECT_MODE_KEY, effect)
+        .putLong(RainWallpaperService.CONFIG_REVISION_KEY, nextRevision)
+        .apply()
 }
 
 private fun openWallpaperPicker(context: Context) {
+    // Keep the chooser action used by the original working implementation.
+    // Some system wallpaper apps do not reopen ACTION_CHANGE_LIVE_WALLPAPER
+    // when the requested component is already the active wallpaper.
     val intent = Intent(WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER).apply {
         putExtra(
             WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT,
